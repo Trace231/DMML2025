@@ -4,7 +4,7 @@
 
 ## 功能亮点
 
-- 支持的数据驱动基准：CRF 特征模型、CNN、Transformer、随机游走（扩散思想）、混合 CNN-Transformer、CNN-CRF、任意模型 + CRF 后处理。
+- 支持的数据驱动基准：CRF 特征模型、CNN、Transformer、DDP（扩散模型）、混合 CNN-Transformer、CNN-CRF、任意模型 + CRF 后处理。
 - 自动化流水线：读取配置 → 下载/加载数据 → 构建模型 → 评测 → 导出 JSON/CSV 结果。
 - 多指标评估：Pixel Accuracy、mIoU、Precision、Recall、F1、Dice 等。
 - 结构化代码：模块化的 `src/segmentation_benchmark` 包，便于扩展自定义模型或数据集。

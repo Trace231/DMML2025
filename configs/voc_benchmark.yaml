@@ -36,7 +36,7 @@ models:
     builder: fcn_resnet50
     params:
       pretrained: true
-      finetune_epochs: 80
+      finetune_epochs: 100
       learning_rate: 0.001  # Increased for better convergence (head LR=0.001, backbone LR=0.0001)
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
@@ -44,7 +44,7 @@ models:
     builder: deeplabv3_resnet50
     params:
       pretrained: true
-      finetune_epochs: 80
+      finetune_epochs: 100
       learning_rate: 0.001  # Increased for better convergence (head LR=0.001, backbone LR=0.0001)
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
@@ -52,7 +52,7 @@ models:
   - name: segformer_b0
     builder: segformer_b0
     params:
-      finetune_epochs: 80
+      finetune_epochs: 100
       learning_rate: 0.00005
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
@@ -61,7 +61,7 @@ models:
   - name: ddp
     builder: ddp
     params:
-      finetune_epochs: 80
+      finetune_epochs: 100
       learning_rate: 0.0001
       weight_decay: 1e-4
       batch_size: 8  # Smaller batch size for diffusion model
@@ -75,7 +75,7 @@ models:
     builder: hybrid_unet_transformer
     params:
       base_channels: 32
-      finetune_epochs: 80
+      finetune_epochs: 100
       learning_rate: 0.001
       weight_decay: 1e-4
       batch_size: 12
@@ -88,7 +88,7 @@ models:
       config:
         base_model: "fcn_resnet50"
         pretrained: true
-        finetune_epochs: 80
+        finetune_epochs: 100
         learning_rate: 0.001
         weight_decay: 1e-4
         batch_size: 12
@@ -107,7 +107,7 @@ models:
       config:
         base_model: "deeplabv3_resnet50"
         pretrained: true
-        finetune_epochs: 80
+        finetune_epochs: 100
         learning_rate: 0.001
         weight_decay: 1e-4
         batch_size: 12
@@ -134,7 +134,7 @@ models:
         batch_size: 12
         num_workers: 14
       crf_params:
-        iterations: 10  # 增加到10次迭代，提高CRF优化效果
+        iterations: 20  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
         bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
@@ -151,7 +151,7 @@ models:
         batch_size: 12
         num_workers: 14
       crf_params:
-        iterations: 10  # 增加到10次迭代，提高CRF优化效果
+        iterations: 20  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
         bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
@@ -167,7 +167,7 @@ models:
         batch_size: 12
         num_workers: 14
       crf_params:
-        iterations: 10  # 增加到10次迭代，提高CRF优化效果
+        iterations: 20  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
         bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
@@ -185,7 +185,7 @@ models:
         batch_size: 12
         num_workers: 14
       crf_params:
-        iterations: 10  # 增加到10次迭代，提高CRF优化效果
+        iterations: 20  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
         bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
@@ -205,7 +205,7 @@ models:
         inference_steps: 50
         base_channels: 64
       crf_params:
-        iterations: 10  # 增加到10次迭代，提高CRF优化效果
+        iterations: 20  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
         bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
