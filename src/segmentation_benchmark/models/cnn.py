@@ -66,11 +66,12 @@ class TorchvisionSegmenter(BaseSegmenter):
         if not hasattr(tv_seg, model_name):
             raise ValueError(f"Unknown torchvision segmentation model '{model_name}'")
         
-        self.finetune_epochs = finetune_epochs
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.batch_size = batch_size
-        self.num_workers = num_workers
+        # Ensure numeric parameters are correct types (YAML may parse as strings)
+        self.finetune_epochs = int(finetune_epochs)
+        self.learning_rate = float(learning_rate)
+        self.weight_decay = float(weight_decay)
+        self.batch_size = int(batch_size)
+        self.num_workers = int(num_workers)
         self.model_name = model_name
         self.pretrained = pretrained
         

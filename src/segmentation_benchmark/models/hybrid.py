@@ -106,12 +106,14 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
         device: Optional[str] = None,
     ) -> None:
         super().__init__(num_classes=num_classes, device=device, name="HybridUNetTransformer")
+        # Ensure numeric parameters are correct types (YAML may parse as strings)
+        base_channels = int(base_channels)
         self.model = HybridUNet(in_channels=3, num_classes=num_classes, base_channels=base_channels).to(self.device)
-        self.finetune_epochs = finetune_epochs
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.batch_size = batch_size
-        self.num_workers = num_workers
+        self.finetune_epochs = int(finetune_epochs)
+        self.learning_rate = float(learning_rate)
+        self.weight_decay = float(weight_decay)
+        self.batch_size = int(batch_size)
+        self.num_workers = int(num_workers)
         self.base_channels = base_channels
         
         # Try to load checkpoint if available (only if finetune_epochs > 0, meaning we expect trained weights)

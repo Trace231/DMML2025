@@ -19,6 +19,29 @@ from ..utils.checkpoint import load_checkpoint, save_checkpoint
 from .base import BaseSegmenter
 
 
+def _get_num_groups(num_channels: int, preferred_groups: int = 8) -> int:
+    """Get number of groups for GroupNorm that divides num_channels.
+    
+    Args:
+        num_channels: Number of input channels
+        preferred_groups: Preferred number of groups (default: 8)
+    
+    Returns:
+        Number of groups that divides num_channels
+    """
+    # Try preferred number of groups first
+    if num_channels % preferred_groups == 0:
+        return preferred_groups
+    
+    # Try smaller divisors
+    for groups in [4, 2, 1]:
+        if num_channels % groups == 0:
+            return groups
+    
+    # Fallback to 1 (LayerNorm-like behavior)
+    return 1
+
+
 class SinusoidalPositionEmbeddings(nn.Module):
     """Sinusoidal position embeddings for time steps."""
     
@@ -46,12 +69,12 @@ class UNetBlock(nn.Module):
             nn.Linear(time_emb_dim, out_channels)
         )
         self.block1 = nn.Sequential(
-            nn.GroupNorm(8, in_channels),
+            nn.GroupNorm(_get_num_groups(in_channels), in_channels),
             nn.SiLU(),
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         )
         self.block2 = nn.Sequential(
-            nn.GroupNorm(8, out_channels),
+            nn.GroupNorm(_get_num_groups(out_channels), out_channels),
             nn.SiLU(),
             nn.Dropout(dropout),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
@@ -102,7 +125,7 @@ class DiffusionUNet(nn.Module):
         
         # Output head - predict noise
         self.out = nn.Sequential(
-            nn.GroupNorm(8, base_channels),
+            nn.GroupNorm(_get_num_groups(base_channels), base_channels),
             nn.SiLU(),
             nn.Conv2d(base_channels, mask_channels, kernel_size=3, padding=1)
         )
@@ -159,14 +182,15 @@ class DDPSegmenter(BaseSegmenter):
         base_channels: int = 64,
     ) -> None:
         super().__init__(num_classes=num_classes, device=device, name="DDP")
-        self.finetune_epochs = finetune_epochs
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.num_timesteps = num_timesteps
-        self.inference_steps = inference_steps
-        self.base_channels = base_channels
+        # Ensure numeric parameters are correct types (YAML may parse as strings)
+        self.finetune_epochs = int(finetune_epochs)
+        self.learning_rate = float(learning_rate)
+        self.weight_decay = float(weight_decay)
+        self.batch_size = int(batch_size)
+        self.num_workers = int(num_workers)
+        self.num_timesteps = int(num_timesteps)
+        self.inference_steps = int(inference_steps)
+        self.base_channels = int(base_channels)
         
         # Build model
         self.model = DiffusionUNet(

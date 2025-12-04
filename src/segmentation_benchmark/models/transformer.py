@@ -90,11 +90,12 @@ class SegformerSegmenter(BaseSegmenter):
             self.model.config.id2label = {i: f"class_{i}" for i in range(num_classes)}
             self.model.config.label2id = {v: k for k, v in self.model.config.id2label.items()}
         self.model.to(self.device)
-        self.finetune_epochs = finetune_epochs
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.batch_size = batch_size
-        self.num_workers = num_workers
+        # Ensure numeric parameters are correct types (YAML may parse as strings)
+        self.finetune_epochs = int(finetune_epochs)
+        self.learning_rate = float(learning_rate)
+        self.weight_decay = float(weight_decay)
+        self.batch_size = int(batch_size)
+        self.num_workers = int(num_workers)
         self.model_name = model_name
         
         # Try to load checkpoint if available (only if finetune_epochs > 0, meaning we expect trained weights)
