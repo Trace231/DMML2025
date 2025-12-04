@@ -1,0 +1,86 @@
+dataset:
+  root: data/crackforest
+  download: true
+  image_size: 256
+  batch_size: 2
+  num_workers: 0
+  augment: true
+  train_ratio: 0.6
+  val_ratio: 0.2
+  sample_limit:
+  seed: 42
+  num_classes: 2
+
+evaluation:
+  run_name: crackforest_full
+  output_dir:
+  save_predictions: false
+
+models:
+  - name: classical_crf
+    builder: classical_crf
+    params:
+      config:
+        sample_pixels: 6000
+        crf_iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 50
+        bilateral_srgb: 13
+  - name: fcn_resnet50
+    builder: fcn_resnet50
+    params:
+      pretrained: true
+      finetune_epochs: 1
+      learning_rate: 0.0005
+      batch_size: 2
+      num_workers: 0
+  - name: deeplabv3_resnet50
+    builder: deeplabv3_resnet50
+    params:
+      pretrained: true
+      finetune_epochs: 1
+      learning_rate: 0.0005
+      batch_size: 2
+      num_workers: 0
+  - name: segformer_b0
+    builder: segformer_b0
+    params:
+      finetune_epochs: 0
+      learning_rate: 0.00005
+      batch_size: 1
+  - name: random_walker
+    builder: random_walker
+    params: {}
+  - name: hybrid_unet
+    builder: hybrid_unet_transformer
+    params:
+      finetune_epochs: 3
+      learning_rate: 0.001
+      batch_size: 4
+      base_channels: 32
+  - name: cnn_crf
+    builder: cnn_crf
+    params:
+      config:
+        base_model: fcn_resnet50
+        pretrained: true
+        finetune_epochs: 1
+        learning_rate: 0.0005
+        batch_size: 2
+        crf_params:
+          iterations: 5
+          gaussian_sxy: 3
+          bilateral_sxy: 80
+          bilateral_srgb: 13
+  - name: fcn_resnet50_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: fcn_resnet50
+      base_params:
+        pretrained: true
+        finetune_epochs: 0
+      crf_params:
+        iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 80
+        bilateral_srgb: 13

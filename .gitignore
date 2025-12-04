@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data and models (通常不提交到 GitHub)
+data/
+artifacts/
+*.pth
+*.pt
+*.h5
+*.ckpt
+*.safetensors
+
+# Logs and reports
+logs/
+reports/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large files
+*.zip
+*.tar
+*.tar.gz
+*.mat
+
+# Temporary files
+*.tmp
+*.temp

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "segmentation-benchmark"
+version = "0.1.0"
+description = "Modular image segmentation benchmarking suite"
+readme = "README.md"
+authors = [
+  {name = "Benchmark Maintainer", email = "maintainer@example.com"}
+]
+requires-python = ">=3.9"
+keywords = ["image segmentation", "benchmark", "computer vision"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "numpy>=1.25",
+  "scipy>=1.10",
+  "scikit-image>=0.21",
+  "scikit-learn>=1.3",
+  "torch>=2.1",
+  "torchvision>=0.16",
+  "transformers>=4.37",
+  "diffusers>=0.22",
+  "pillow>=10.0",
+  "opencv-python>=4.8",
+  "pydensecrf",
+  "requests>=2.31",
+  "tqdm>=4.66",
+  "pyyaml>=6.0",
+  "pandas>=2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "black>=23.9",
+  "ruff>=0.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

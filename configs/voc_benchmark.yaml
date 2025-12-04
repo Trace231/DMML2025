@@ -1,0 +1,54 @@
+
+dataset:
+  type: voc  # Use Pascal VOC dataset
+  root: data
+  download: true
+  year: "2012"
+  image_size: 256
+  batch_size: 2
+  num_workers: 0
+  augment: true
+  train_ratio: 0.6
+  val_ratio: 0.2
+  sample_limit: 100  # Limit to 100 samples (train+val+test together)
+  seed: 42
+  num_classes: 21  # Pascal VOC has 21 classes (0=background, 1-20=object classes)
+
+evaluation:
+  run_name: voc_benchmark
+  output_dir:
+  save_predictions: false
+
+models:
+  - name: classical_crf
+    builder: classical_crf
+    params:
+      config:
+        sample_pixels: 6000
+        crf_iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 50
+        bilateral_srgb: 13
+  - name: fcn_resnet50
+    builder: fcn_resnet50
+    params:
+      pretrained: true
+      finetune_epochs: 0
+      learning_rate: 0.0005
+      batch_size: 2
+      num_workers: 0
+  - name: deeplabv3_resnet50
+    builder: deeplabv3_resnet50
+    params:
+      pretrained: true
+      finetune_epochs: 0
+      learning_rate: 0.0005
+      batch_size: 2
+      num_workers: 0
+  - name: segformer_b0
+    builder: segformer_b0
+    params:
+      finetune_epochs: 0
+      learning_rate: 0.00005
+      batch_size: 1
+
