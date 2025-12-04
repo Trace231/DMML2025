@@ -62,7 +62,7 @@ def build_segmenter(name: str, **kwargs: Any) -> BaseSegmenter:
             "torchvision": "segmentation_benchmark.models.cnn",
             "segformer": "segmentation_benchmark.models.transformer",
             "segformer_b0": "segmentation_benchmark.models.transformer",
-            "random_walker": "segmentation_benchmark.models.diffusion",
+            "ddp": "segmentation_benchmark.models.diffusion",
             "hybrid_unet_transformer": "segmentation_benchmark.models.hybrid",
             "cnn_crf": "segmentation_benchmark.models.cnn_crf",
             "crf_wrapper": "segmentation_benchmark.models.crf_postprocess",

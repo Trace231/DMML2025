@@ -57,13 +57,18 @@ models:
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
   
-  # ========== 扩散/随机游走模型 ==========
-  - name: random_walker
-    builder: random_walker
+  # ========== 扩散模型 ==========
+  - name: ddp
+    builder: ddp
     params:
-      beta: 130.0
-      tolerance: 1e-3
-      mode: "bf"  # "bf" (brute force) or "cg" (conjugate gradient)
+      finetune_epochs: 50
+      learning_rate: 0.0001
+      weight_decay: 1e-4
+      batch_size: 8  # Smaller batch size for diffusion model
+      num_workers: 14
+      num_timesteps: 1000  # Training timesteps
+      inference_steps: 50  # Inference timesteps (fewer for speed)
+      base_channels: 64
   
   # ========== 混合 CNN-Transformer 模型 ==========
   - name: hybrid_unet_transformer
@@ -174,14 +179,19 @@ models:
         gaussian_sxy: 3
         bilateral_sxy: 80
         bilateral_srgb: 13
-  - name: random_walker_crf_post
+  - name: ddp_crf_post
     builder: crf_wrapper
     params:
-      base_builder: random_walker
+      base_builder: ddp
       base_params:
-        beta: 130.0
-        tolerance: 1e-3
-        mode: "bf"
+        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用
+        learning_rate: 0.0001
+        weight_decay: 1e-4
+        batch_size: 8
+        num_workers: 14
+        num_timesteps: 1000
+        inference_steps: 50
+        base_channels: 64
       crf_params:
         iterations: 5
         gaussian_sxy: 3
