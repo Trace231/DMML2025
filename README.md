@@ -153,7 +153,7 @@ models:
 如需添加新的模型，只需在 `models` 配置列表中追加相应条目，并确保对应的 `builder` 已在模型注册表中完成注册。
 
 ## 扩展指南
-
+该项目支持各种基线扩展，以便进一步开发和交流。
 - **添加新模型**：在 `src/segmentation_benchmark/models/` 目录下实现继承自 `BaseSegmenter` 的模型类，并使用 `@register_segmenter("your_name")` 装饰器完成注册。
 - **替换数据集**：实现新的 Dataset 类以及相应的 `create_dataloaders` 工厂函数，并在配置文件中进行引用。
 - **自定义指标**：在 `metrics` 模块中扩展 `SegmentationMetrics` 或 `MetricsAggregator` 类，实现自定义评估指标的计算逻辑。
