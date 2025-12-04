@@ -11,7 +11,7 @@ dataset:
   train_ratio: 0.6
   val_ratio: 0.2
   sample_limit: 10000  # Limit total samples (train+val+test together). Set to null/empty to use all available samples.
-  seed: 42
+  seed: 42   # 
   num_classes: 21  # Pascal VOC has 21 classes (0=background, 1-20=object classes)
 
 evaluation:
@@ -20,15 +20,18 @@ evaluation:
   save_predictions: false
 
 models:
-  # - name: classical_crf
-  #   builder: classical_crf
-  #   params:
-  #     config:
-  #       sample_pixels: 6000
-  #       crf_iterations: 5
-  #       gaussian_sxy: 3
-  #       bilateral_sxy: 50
-  #       bilateral_srgb: 13
+  # ========== 特征 + CRF 模型 ==========
+  - name: classical_crf
+    builder: classical_crf
+    params:
+      config:
+        sample_pixels: 6000
+        crf_iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 50
+        bilateral_srgb: 13
+  
+  # ========== CNN 模型 ==========
   - name: fcn_resnet50
     builder: fcn_resnet50
     params:
@@ -45,6 +48,7 @@ models:
       learning_rate: 0.001  # Increased for better convergence (head LR=0.001, backbone LR=0.0001)
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
+  # ========== Transformer 模型 ==========
   - name: segformer_b0
     builder: segformer_b0
     params:
@@ -52,6 +56,62 @@ models:
       learning_rate: 0.00005
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
+  
+  # ========== 扩散/随机游走模型 ==========
+  - name: random_walker
+    builder: random_walker
+    params:
+      beta: 130.0
+      tolerance: 1e-3
+      mode: "bf"  # "bf" (brute force) or "cg" (conjugate gradient)
+  
+  # ========== 混合 CNN-Transformer 模型 ==========
+  - name: hybrid_unet_transformer
+    builder: hybrid_unet_transformer
+    params:
+      base_channels: 32
+      finetune_epochs: 50
+      learning_rate: 0.001
+      weight_decay: 1e-4
+      batch_size: 12
+      num_workers: 14
+  
+  # ========== CNN-CRF 端到端模型 ==========
+  - name: cnn_crf_fcn
+    builder: cnn_crf
+    params:
+      config:
+        base_model: "fcn_resnet50"
+        pretrained: true
+        finetune_epochs: 50
+        learning_rate: 0.001
+        weight_decay: 1e-4
+        batch_size: 12
+        num_workers: 14
+        crf_params:
+          iterations: 5
+          gaussian_sxy: 3
+          bilateral_sxy: 80
+          bilateral_srgb: 13
+  
+  - name: cnn_crf_deeplabv3
+    builder: cnn_crf
+    params:
+      config:
+        base_model: "deeplabv3_resnet50"
+        pretrained: true
+        finetune_epochs: 50
+        learning_rate: 0.001
+        weight_decay: 1e-4
+        batch_size: 12
+        num_workers: 14
+        crf_params:
+          iterations: 5
+          gaussian_sxy: 3
+          bilateral_sxy: 80
+          bilateral_srgb: 13
+  
+  # ========== 任意模型 + CRF 后处理 ==========
   # CRF后处理评估 - 为所有模型添加CRF后处理版本
   # 注意：如果前面训练过相同配置的基础模型，会自动加载训练好的checkpoint
   - name: fcn_resnet50_crf_post
@@ -93,6 +153,35 @@ models:
         learning_rate: 0.00005
         batch_size: 12
         num_workers: 14
+      crf_params:
+        iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 80
+        bilateral_srgb: 13
+  - name: hybrid_unet_transformer_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: hybrid_unet_transformer
+      base_params:
+        base_channels: 32
+        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用
+        learning_rate: 0.001
+        weight_decay: 1e-4
+        batch_size: 12
+        num_workers: 14
+      crf_params:
+        iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 80
+        bilateral_srgb: 13
+  - name: random_walker_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: random_walker
+      base_params:
+        beta: 130.0
+        tolerance: 1e-3
+        mode: "bf"
       crf_params:
         iterations: 5
         gaussian_sxy: 3
