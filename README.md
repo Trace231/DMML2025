@@ -103,7 +103,7 @@ pip install -e .[dev]
 | 特征 + CRF | `classical_crf` | 手工特征 + Random Forest + DenseCRF |
 | CNN | `fcn_resnet50`, `deeplabv3_resnet50` | Torchvision 语义分割骨干，可微调 |
 | Transformer | `segformer_b0` | HuggingFace SegFormer-B0 模型 |
-| Diffusion 风格 | `random_walker` | 基于随机游走（扩散思想）的快速分割 |
+| Diffusion 风格 | `random_walker` | DDP（扩散模型） |
 | Hybrid | `hybrid_unet_transformer` | 自定义 CNN + 多头自注意力混合模型 |
 | CNN-CRF | `cnn_crf` | CNN 预测 + DenseCRF 端到端组合 |
 | 任意模型 + CRF 后处理 | `crf_wrapper` | 包装任意注册模型并追加 DenseCRF 后处理 |
