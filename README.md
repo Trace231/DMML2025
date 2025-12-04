@@ -1,3 +1,325 @@
+# Image Segmentation Benchmark Suite
+
+This is a comprehensive image segmentation evaluation project for comparing various types of segmentation models on datasets and outputting unified evaluation metrics. We aim to validate the practical effectiveness of CRF post-processing techniques in image segmentation post-processing through this work. This project supports evaluation modules for two default datasets: the **"crackforest"** dataset and the **voc_2012** dataset, with support for automatic download, dataset splitting, model training/fine-tuning, inference, metric calculation, and result archiving.
+
+## Key Features
+
+- Supported data-driven baselines: CRF feature models, CNN, Transformer, DDP (Diffusion Model), Hybrid CNN-Transformer, CNN-CRF, and any model + CRF post-processing.
+- Automated pipeline: Read configuration → Download/Load data → Build models → Evaluate → Export JSON/CSV results.
+- Multi-metric evaluation: Pixel Accuracy, mIoU, Precision, Recall, F1, Dice, etc.
+- Structured code: Modular `src/segmentation_benchmark` package for easy extension of custom models or datasets.
+- Unit tests covering basic components (metric calculation, data pipeline, registry).
+
+## File Tree
+
+```
+segmentation-benchmark/
+├── configs/                  # YAML configurations (default: crackforest_benchmark.yaml)
+├── data/                     # Dataset download directory (auto-generated on first run)
+├── scripts/                  # Command-line scripts (download data, run benchmarks, etc.)
+├── src/segmentation_benchmark/
+│   ├── data/                 # Dataset loading and splitting
+│   ├── evaluation/           # Evaluators and registry
+│   ├── metrics/              # Metric calculation
+│   ├── models/               # Various segmentation model wrappers
+│   └── utils/                # Configuration and path utilities
+├── tests/                    # Pytest test cases
+├── reports/                  # Evaluation outputs (auto-created)
+├── artifacts/                # Training weights, etc. (placeholder directory)
+├── requirements.txt          # Dependency list
+└── pyproject.toml             # Package configuration
+```
+
+## Dataset Information
+
+### CrackForest Dataset
+
+- **Dataset Name**: CrackForest Dataset (contains 118 urban road crack images)
+- **Official Source**: <https://github.com/cuilimeng/CrackForest-dataset>
+- **Usage License**: This dataset is limited to non-commercial research purposes. Please follow the citation requirements in the project README when using it.
+- **Data Preparation**: Can be manually downloaded by running `python scripts/download_crackforest.py`, or automatically downloaded when running benchmark tests.
+
+### Pascal VOC 2012 Dataset
+
+- **Dataset Name**: Pascal VOC 2012 (contains semantic segmentation annotations for 21 classes)
+- **Official Source**: <http://host.robots.ox.ac.uk/pascal/VOC/voc2012/>
+- **Usage License**: The Pascal VOC dataset follows its official usage license, typically allowing use for academic research.
+- **Data Preparation**: When `download: true` is set in the configuration file, the system will automatically download the dataset via torchvision; the dataset will be saved to the `data/voc/VOCdevkit/VOC2012/` directory.
+- **Note**: The dataset download website is often unstable. If you need the dataset, please contact: wangfeiming@mail.nankai.edu.cn, and we will seek ways to make the dataset publicly available!
+
+> The default configuration splits the dataset into Train:Val:Test = 60% : 20% : 20%. This can be customized via YAML configuration.
+
+## Installation
+
+This project requires Python 3.10 environment. Please note that pydensecrf needs to be compiled and installed separately. **When configuring, note that Cython needs to be downgraded to version 2.X for compilation.**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
+# Install development dependencies
+pip install -e .[dev]
+```
+
+> Use the above commands in Windows PowerShell; adjust the virtual environment activation method for other platforms.
+
+## Quick Start
+
+1. **Dataset Download (Optional)**:
+   
+   For the CrackForest dataset:
+   ```powershell
+   python scripts/download_crackforest.py
+   ```
+   
+   For the Pascal VOC 2012 dataset, the system will automatically download on first run (requires `download: true` configuration). To manually trigger, you can directly run the benchmark script, and the system will automatically detect and download missing datasets.
+
+2. **Run Benchmark Tests**:
+   
+   Using the CrackForest dataset:
+   ```powershell
+   python scripts/run_benchmark.py --config configs/crackforest_benchmark.yaml
+   ```
+   
+   Using the Pascal VOC 2012 dataset:
+   ```powershell
+   python scripts/run_benchmark.py --config configs/voc_benchmark.yaml
+   ```
+   
+   After the benchmark test completes, evaluation metrics for all models will be saved to the `reports/<run_name>/` directory:
+   
+   - `<model>_metrics.json`: Detailed evaluation metrics for individual models
+   - `benchmark_summary.csv` / `benchmark_summary.json`: Comparison summary table for all models
+
+3. **Parameter Configuration**:
+   - `--device cuda`: Specify GPU execution (requires CUDA environment support)
+   - `--skip-train`: Skip training/fine-tuning stages for all models, only perform inference evaluation
+   - `--save-predictions`: Save prediction masks for each model as `.npy` format files
+
+## Model Architecture Overview
+
+| Type | Registered Name | Description |
+| ---- | --------------- | ----------- |
+| Feature + CRF | `classical_crf` | Handcrafted features + Random Forest + DenseCRF |
+| CNN | `fcn_resnet50`, `deeplabv3_resnet50` | Torchvision semantic segmentation backbones, fine-tunable |
+| Transformer | `segformer_b0` | HuggingFace SegFormer-B0 model |
+| Diffusion Style | `random_walker` | DDP (Diffusion Model) |
+| Hybrid | `hybrid_unet_transformer` | Custom CNN + Multi-head self-attention hybrid model |
+| CNN-CRF | `cnn_crf` | CNN prediction + DenseCRF end-to-end combination |
+| Any Model + CRF Post-processing | `crf_wrapper` | Wraps any registered model and appends DenseCRF post-processing |
+
+> All models are registered via `segmentation_benchmark.evaluation.registry` and can be easily extended.
+
+### CRF Post-processing Evaluation
+
+This project supports adding DenseCRF post-processing evaluation to **any registered model**. CRF post-processing can improve the smoothness and accuracy of segmentation boundaries. In the configuration file, use the `crf_wrapper` builder to wrap any base model:
+
+```yaml
+models:
+  # Base model
+  - name: fcn_resnet50
+    builder: fcn_resnet50
+    params:
+      pretrained: true
+      finetune_epochs: 50
+  
+  # CRF post-processing version of the same model
+  - name: fcn_resnet50_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: fcn_resnet50  # Specify the base model to wrap
+      base_params:               # Base model parameters
+        pretrained: true
+        finetune_epochs: 0       # Usually use pretrained model, no fine-tuning
+      crf_params:                # CRF post-processing parameters
+        iterations: 5            # CRF iteration count
+        gaussian_sxy: 3          # Gaussian smoothing parameter
+        bilateral_sxy: 80        # Bilateral filter spatial parameter
+        bilateral_srgb: 13       # Bilateral filter color parameter
+```
+
+**CRF Post-processing Parameter Description**:
+- `iterations`: CRF inference iteration count (default 5, more iterations may improve results but increase computation time)
+- `gaussian_sxy`: Spatial standard deviation for Gaussian smoothing (default 3)
+- `bilateral_sxy`: Spatial standard deviation for bilateral filtering (default 50-80)
+- `bilateral_srgb`: Color standard deviation for bilateral filtering (default 13)
+- `compat_gaussian`: Gaussian compatibility weight (default 3)
+- `compat_bilateral`: Bilateral compatibility weight (default 10)
+
+The current configuration file has added CRF post-processing evaluation versions for all major models (FCN, DeepLabV3, SegFormer, Hybrid UNet), and you can directly run benchmark tests for comparison.
+
+### Automatic Checkpoint Management
+
+This framework supports **intelligent checkpoint management**, automatically saving and loading trained models:
+
+1. **Auto-save**: After training completes, models are automatically saved to the `artifacts/checkpoints/` directory
+2. **Auto-load**: If the configuration is the same, previously trained models will be automatically loaded on the next run, skipping the training stage
+3. **CRF Post-processing Auto-matching**: CRF post-processing versions will automatically find and use trained base model checkpoints
+
+**How It Works**:
+- Each checkpoint generates a unique hash based on model configuration (model name, number of classes, learning rate, training epochs, etc.)
+- When configurations match exactly, the corresponding checkpoint is automatically loaded
+- CRF wrapper intelligently finds matching base model checkpoints (ignoring the `finetune_epochs` parameter)
+
+**Example**:
+```yaml
+# First run: Train and save checkpoint
+- name: fcn_resnet50
+  builder: fcn_resnet50
+  params:
+    pretrained: true
+    finetune_epochs: 50  # Train for 50 epochs, automatically saved after training
+
+# Second run: Automatically load checkpoint, skip training
+- name: fcn_resnet50_crf_post
+  builder: crf_wrapper
+  params:
+    base_builder: fcn_resnet50
+    base_params:
+      pretrained: true
+      finetune_epochs: 0  # Automatically find and load trained checkpoint
+```
+
+**Manual Checkpoint Management**:
+- All checkpoints are saved in the `artifacts/checkpoints/` directory
+- File name format: `{builder}_{config_hash}.pth`
+- You can force retraining by deleting checkpoint files
+
+## Evaluation Metrics
+
+This framework calculates and outputs the following evaluation metrics by default:
+
+- Pixel Accuracy
+- Mean IoU (Mean Intersection over Union)
+- Mean Precision / Recall / F1
+- Mean Dice
+- Per-class IoU / Precision / Recall / F1 / Dice
+- Confusion Matrix
+
+The metric calculation implementation is located in `src/segmentation_benchmark/metrics/metrics.py`, and users can extend it according to research needs.
+
+## Configuration File Description
+
+Key parameter descriptions in the `configs/crackforest_benchmark.yaml` configuration file:
+
+```yaml
+dataset:
+  root: data/crackforest  # Data directory
+  download: true          # Auto-download if missing
+  image_size: 256         # Unified resolution
+  train_ratio: 0.6        # Training set ratio
+  val_ratio: 0.2
+  num_classes: 2
+
+models:
+  - name: fcn_resnet50
+    builder: fcn_resnet50
+    params:
+      finetune_epochs: 1
+      pretrained: true
+  - name: fcn_resnet50_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: fcn_resnet50
+      crf_params:
+        iterations: 5
+```
+
+To add new models, simply append corresponding entries to the `models` configuration list, and ensure the corresponding `builder` has been registered in the model registry.
+
+## Extension Guide
+
+This project supports various baseline extensions for further development and collaboration.
+
+### Adding New Models
+
+1. **Create Model File**: Create a new Python file in the `src/segmentation_benchmark/models/` directory (e.g., `my_model.py`)
+
+2. **Implement Model Class**: Inherit from `BaseSegmenter` and implement necessary methods:
+   ```python
+   from ..evaluation.registry import register_segmenter
+   from .base import BaseSegmenter
+   
+   @register_segmenter("my_model")
+   class MySegmenter(BaseSegmenter):
+       def __init__(self, num_classes: int = 2, **kwargs):
+           super().__init__(num_classes=num_classes, name="MyModel")
+           # Initialize model
+       
+       def prepare(self, train_dataset=None, val_dataset=None):
+           # Optional: Train/fine-tune model
+           pass
+       
+       def predict_batch(self, batch):
+           # Required: Return (N, H, W) prediction masks
+           pass
+       
+       def predict_logits(self, batch):
+           # Optional: Return (N, C, H, W) logits (for CRF post-processing)
+           pass
+   ```
+
+3. **Register Model**: Ensure the model module is added to the `_MODEL_MODULES` list in `src/segmentation_benchmark/evaluation/registry.py`:
+   ```python
+   _MODEL_MODULES = [
+       # ... other modules
+       "segmentation_benchmark.models.my_model",  # Add your model module
+   ]
+   ```
+
+4. **Use in Configuration File**: Add model configuration in the YAML configuration file:
+   ```yaml
+   models:
+     - name: my_model
+       builder: my_model
+       params:
+         num_classes: 2
+         # Other parameters...
+   ```
+
+5. **Add CRF Post-processing Version** (Optional): Add CRF post-processing evaluation for the new model:
+   ```yaml
+   - name: my_model_crf_post
+     builder: crf_wrapper
+     params:
+       base_builder: my_model
+       base_params:
+         num_classes: 2
+       crf_params:
+         iterations: 5
+         gaussian_sxy: 3
+         bilateral_sxy: 80
+         bilateral_srgb: 13
+   ```
+
+### Other Extensions
+- **Replace Dataset**: Implement a new Dataset class and corresponding `create_dataloaders` factory function, and reference it in the configuration file.
+- **Custom Metrics**: Extend the `SegmentationMetrics` or `MetricsAggregator` class in the `metrics` module to implement custom evaluation metric calculation logic.
+
+## Testing
+
+```powershell
+pytest -q
+```
+
+- `tests/test_metrics.py`: Verify the correctness of evaluation metric calculations
+- `tests/test_data.py`: Verify dataset loading and DataLoader data splitting functionality
+- `tests/test_registry.py`: Ensure key models are correctly registered in the registry
+
+## License and Citation
+
+- The project code defaults to MIT License. Specific license information can be viewed or adjusted in `pyproject.toml`.
+- When using the CrackForest dataset, please follow its non-commercial usage license and cite the literature provided by the original authors in relevant papers or research reports.
+
+## Acknowledgments
+
+This project thanks the CrackForest dataset authors and the open-source community (including PyTorch, Torchvision, Transformers, scikit-image, pydensecrf, etc.) for providing excellent tools and resource support.
+
+This project aims to provide a systematic evaluation framework for image segmentation tasks, supporting comparative analysis of various model architectures.
+
+---
+
 # 图像分割集成套件
 
 这是一个完整的图像分割评测项目，用于在数据集上比较多种类型的分割模型，并统一输出评估指标。我们希望通过该工作验证crf后处理技巧在图像分割后处理中的实际作用。本项目支持两个默认数据集的评测模块，分别是 **"crackforest"** 数据集和 **voc_2012** 数据集 ，支持自动下载、数据集拆分、模型训练/微调、推理、指标计算和结果归档。
