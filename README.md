@@ -110,6 +110,81 @@ pip install -e .[dev]
 
 > 所有模型均通过 `segmentation_benchmark.evaluation.registry` 注册，可轻松扩展。
 
+### CRF 后处理评估
+
+本项目支持为**任意已注册的模型**添加 DenseCRF 后处理评估。CRF 后处理可以改善分割边界的平滑性和准确性。在配置文件中，使用 `crf_wrapper` builder 包装任何基础模型即可：
+
+```yaml
+models:
+  # 基础模型
+  - name: fcn_resnet50
+    builder: fcn_resnet50
+    params:
+      pretrained: true
+      finetune_epochs: 50
+  
+  # 同一模型的CRF后处理版本
+  - name: fcn_resnet50_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: fcn_resnet50  # 指定要包装的基础模型
+      base_params:               # 基础模型的参数
+        pretrained: true
+        finetune_epochs: 0       # 通常使用预训练模型，不微调
+      crf_params:                # CRF后处理参数
+        iterations: 5            # CRF迭代次数
+        gaussian_sxy: 3          # 高斯平滑参数
+        bilateral_sxy: 80        # 双边滤波空间参数
+        bilateral_srgb: 13       # 双边滤波颜色参数
+```
+
+**CRF 后处理参数说明**：
+- `iterations`: CRF 推理迭代次数（默认 5，更多迭代可能提升效果但增加计算时间）
+- `gaussian_sxy`: 高斯平滑的空间标准差（默认 3）
+- `bilateral_sxy`: 双边滤波的空间标准差（默认 50-80）
+- `bilateral_srgb`: 双边滤波的颜色标准差（默认 13）
+- `compat_gaussian`: 高斯兼容性权重（默认 3）
+- `compat_bilateral`: 双边兼容性权重（默认 10）
+
+当前配置文件中已为所有主要模型（FCN、DeepLabV3、SegFormer、Hybrid UNet）添加了 CRF 后处理评估版本，可以直接运行基准测试进行对比。
+
+### 自动 Checkpoint 管理
+
+本框架支持**智能 checkpoint 管理**，可以自动保存和加载训练好的模型：
+
+1. **自动保存**：训练完成后，模型会自动保存到 `artifacts/checkpoints/` 目录
+2. **自动加载**：如果配置相同，下次运行时会自动加载之前训练好的模型，跳过训练阶段
+3. **CRF 后处理自动匹配**：CRF 后处理版本会自动查找并使用训练好的基础模型 checkpoint
+
+**工作原理**：
+- 每个 checkpoint 根据模型配置（模型名称、类别数、学习率、训练轮数等）生成唯一哈希
+- 配置完全匹配时自动加载对应的 checkpoint
+- CRF wrapper 会智能查找匹配的基础模型 checkpoint（忽略 `finetune_epochs` 参数）
+
+**示例**：
+```yaml
+# 第一次运行：训练并保存 checkpoint
+- name: fcn_resnet50
+  builder: fcn_resnet50
+  params:
+    pretrained: true
+    finetune_epochs: 50  # 训练50轮，训练完成后自动保存
+
+# 第二次运行：自动加载 checkpoint，跳过训练
+- name: fcn_resnet50_crf_post
+  builder: crf_wrapper
+  params:
+    base_builder: fcn_resnet50
+    base_params:
+      pretrained: true
+      finetune_epochs: 0  # 自动查找并加载训练好的 checkpoint
+```
+
+**手动管理 checkpoint**：
+- 所有 checkpoint 保存在 `artifacts/checkpoints/` 目录
+- 文件名格式：`{builder}_{config_hash}.pth`
+- 可以通过删除 checkpoint 文件来强制重新训练
+
 ## 评估指标
 
 本框架默认计算并输出以下评估指标：
@@ -154,7 +229,69 @@ models:
 
 ## 扩展指南
 该项目支持各种基线扩展，以便进一步开发和交流。
-- **添加新模型**：在 `src/segmentation_benchmark/models/` 目录下实现继承自 `BaseSegmenter` 的模型类，并使用 `@register_segmenter("your_name")` 装饰器完成注册。
+
+### 添加新模型
+
+1. **创建模型文件**：在 `src/segmentation_benchmark/models/` 目录下创建新的 Python 文件（例如 `my_model.py`）
+
+2. **实现模型类**：继承 `BaseSegmenter` 并实现必要的方法：
+   ```python
+   from ..evaluation.registry import register_segmenter
+   from .base import BaseSegmenter
+   
+   @register_segmenter("my_model")
+   class MySegmenter(BaseSegmenter):
+       def __init__(self, num_classes: int = 2, **kwargs):
+           super().__init__(num_classes=num_classes, name="MyModel")
+           # 初始化模型
+       
+       def prepare(self, train_dataset=None, val_dataset=None):
+           # 可选：训练/微调模型
+           pass
+       
+       def predict_batch(self, batch):
+           # 必须实现：返回 (N, H, W) 的预测掩码
+           pass
+       
+       def predict_logits(self, batch):
+           # 可选：返回 (N, C, H, W) 的 logits（用于CRF后处理）
+           pass
+   ```
+
+3. **注册模型**：确保模型模块被添加到 `src/segmentation_benchmark/evaluation/registry.py` 的 `_MODEL_MODULES` 列表中：
+   ```python
+   _MODEL_MODULES = [
+       # ... 其他模块
+       "segmentation_benchmark.models.my_model",  # 添加你的模型模块
+   ]
+   ```
+
+4. **在配置文件中使用**：在 YAML 配置文件中添加模型配置：
+   ```yaml
+   models:
+     - name: my_model
+       builder: my_model
+       params:
+         num_classes: 2
+         # 其他参数...
+   ```
+
+5. **添加 CRF 后处理版本**（可选）：为新模型添加 CRF 后处理评估：
+   ```yaml
+   - name: my_model_crf_post
+     builder: crf_wrapper
+     params:
+       base_builder: my_model
+       base_params:
+         num_classes: 2
+       crf_params:
+         iterations: 5
+         gaussian_sxy: 3
+         bilateral_sxy: 80
+         bilateral_srgb: 13
+   ```
+
+### 其他扩展
 - **替换数据集**：实现新的 Dataset 类以及相应的 `create_dataloaders` 工厂函数，并在配置文件中进行引用。
 - **自定义指标**：在 `metrics` 模块中扩展 `SegmentationMetrics` 或 `MetricsAggregator` 类，实现自定义评估指标的计算逻辑。
 

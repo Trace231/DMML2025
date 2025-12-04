@@ -52,4 +52,50 @@ models:
       learning_rate: 0.00005
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
+  # CRF后处理评估 - 为所有模型添加CRF后处理版本
+  # 注意：如果前面训练过相同配置的基础模型，会自动加载训练好的checkpoint
+  - name: fcn_resnet50_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: fcn_resnet50
+      base_params:
+        pretrained: true
+        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用，否则使用官方预训练权重
+        learning_rate: 0.001
+        batch_size: 12
+        num_workers: 14
+      crf_params:
+        iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 80
+        bilateral_srgb: 13
+  - name: deeplabv3_resnet50_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: deeplabv3_resnet50
+      base_params:
+        pretrained: true
+        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用，否则使用官方预训练权重
+        learning_rate: 0.001
+        batch_size: 12
+        num_workers: 14
+      crf_params:
+        iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 80
+        bilateral_srgb: 13
+  - name: segformer_b0_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: segformer_b0
+      base_params:
+        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用，否则使用官方预训练权重
+        learning_rate: 0.00005
+        batch_size: 12
+        num_workers: 14
+      crf_params:
+        iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 80
+        bilateral_srgb: 13
 

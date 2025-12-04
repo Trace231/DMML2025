@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
 
 from ..evaluation.registry import register_segmenter
+from ..utils.checkpoint import load_checkpoint, save_checkpoint
 from ..utils.pretrained import get_huggingface_cache_dir
 from .base import BaseSegmenter
 
@@ -94,8 +95,39 @@ class SegformerSegmenter(BaseSegmenter):
         self.weight_decay = weight_decay
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.model_name = model_name
+        
+        # Try to load checkpoint if available (only if finetune_epochs > 0, meaning we expect trained weights)
+        if finetune_epochs > 0:
+            config = self._get_config()
+            checkpoint = load_checkpoint("segformer_b0", config, model=self.model, device=self.device)
+            if checkpoint is not None:
+                print(f"[INFO] {self.name}: Loaded checkpoint from previous training")
+                self._checkpoint_loaded = True
+            else:
+                self._checkpoint_loaded = False
+        else:
+            self._checkpoint_loaded = False
 
+    def _get_config(self) -> Dict[str, Any]:
+        """Get configuration dictionary for checkpoint matching."""
+        return {
+            "model_name": self.model_name,
+            "num_classes": self.num_classes,
+            "finetune_epochs": self.finetune_epochs,
+            "learning_rate": self.learning_rate,
+            "weight_decay": self.weight_decay,
+            "batch_size": self.batch_size,
+            "num_workers": self.num_workers,
+        }
+    
     def prepare(self, train_dataset: Optional[Any] = None, val_dataset: Optional[Any] = None) -> None:
+        # Skip training if checkpoint was already loaded
+        if self._checkpoint_loaded:
+            print(f"[INFO] {self.name}: Skipping training (using loaded checkpoint)")
+            self.model.eval()
+            return
+        
         if self.finetune_epochs <= 0 or train_dataset is None:
             return
         loader = DataLoader(
@@ -147,6 +179,16 @@ class SegformerSegmenter(BaseSegmenter):
             avg_loss = epoch_loss / max(batch_count, 1)
             print(f"[TRAIN] {self.name} epoch {epoch+1}/{self.finetune_epochs} - avg loss: {avg_loss:.4f}")
         self.model.eval()
+        
+        # Save checkpoint after training
+        config = self._get_config()
+        checkpoint_path = save_checkpoint(
+            self.model,
+            "segformer_b0",
+            config,
+            metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs}
+        )
+        print(f"[INFO] {self.name}: Saved checkpoint to {checkpoint_path}")
 
     def _prepare_images(self, tensor: torch.Tensor) -> List[np.ndarray]:
         """Convert normalized tensor back to RGB images in [0, 255] range.

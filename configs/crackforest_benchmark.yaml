@@ -72,6 +72,7 @@ models:
           gaussian_sxy: 3
           bilateral_sxy: 80
           bilateral_srgb: 13
+  # CRF后处理评估 - 为所有模型添加CRF后处理版本
   - name: fcn_resnet50_crf_post
     builder: crf_wrapper
     params:
@@ -79,6 +80,45 @@ models:
       base_params:
         pretrained: true
         finetune_epochs: 0
+      crf_params:
+        iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 80
+        bilateral_srgb: 13
+  - name: deeplabv3_resnet50_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: deeplabv3_resnet50
+      base_params:
+        pretrained: true
+        finetune_epochs: 0
+      crf_params:
+        iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 80
+        bilateral_srgb: 13
+  - name: segformer_b0_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: segformer_b0
+      base_params:
+        finetune_epochs: 0
+        learning_rate: 0.00005
+        batch_size: 1
+      crf_params:
+        iterations: 5
+        gaussian_sxy: 3
+        bilateral_sxy: 80
+        bilateral_srgb: 13
+  - name: hybrid_unet_crf_post
+    builder: crf_wrapper
+    params:
+      base_builder: hybrid_unet_transformer
+      base_params:
+        finetune_epochs: 0
+        learning_rate: 0.001
+        batch_size: 4
+        base_channels: 32
       crf_params:
         iterations: 5
         gaussian_sxy: 3

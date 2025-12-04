@@ -97,11 +97,36 @@ class CrfWrappedSegmenter(BaseSegmenter):
         num_classes: int = 2,
         crf_params: Optional[Dict[str, Any]] = None,
         name: Optional[str] = None,
+        use_trained_base: bool = True,
     ) -> None:
         super().__init__(num_classes=num_classes, name=name or f"{base_builder}-CRFPost")
         base_params = dict(base_params or {})
         base_params.setdefault("num_classes", num_classes)
         base_params.setdefault("device", str(self.device))
+        
+        # If use_trained_base is True and finetune_epochs is 0, try to find a trained checkpoint
+        # by ignoring finetune_epochs in the matching
+        if use_trained_base and base_params.get("finetune_epochs", 0) == 0:
+            from ..utils.checkpoint import find_matching_checkpoint
+            
+            # Try to find checkpoint ignoring finetune_epochs (so we can use any trained version)
+            checkpoint_path = find_matching_checkpoint(
+                base_builder, 
+                base_params, 
+                ignore_keys=["finetune_epochs"]
+            )
+            
+            if checkpoint_path is not None:
+                # Found a checkpoint, load its config to get the correct finetune_epochs
+                from ..utils.checkpoint import get_config_from_checkpoint
+                checkpoint_config = get_config_from_checkpoint(checkpoint_path)
+                if checkpoint_config:
+                    # Use the checkpoint's finetune_epochs so the model will load the checkpoint
+                    base_params["finetune_epochs"] = checkpoint_config.get("finetune_epochs", 50)
+                    print(f"[INFO] {self.name}: Found trained checkpoint for base model (epochs={base_params['finetune_epochs']}), will load it")
+            else:
+                print(f"[INFO] {self.name}: No trained checkpoint found for base model, using pretrained weights")
+        
         self.base = build_segmenter(base_builder, **base_params)
         params = CrfParams(**crf_params) if isinstance(crf_params, dict) else crf_params
         self.post = CrfPostProcessor(num_classes=num_classes, params=params)

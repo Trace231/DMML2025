@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 from torchvision.models import segmentation as tv_seg
 
 from ..evaluation.registry import register_segmenter
+from ..utils.checkpoint import load_checkpoint, save_checkpoint
 from ..utils.pretrained import build_torchvision_segmentation_model
 from .base import BaseSegmenter
 
@@ -64,19 +65,6 @@ class TorchvisionSegmenter(BaseSegmenter):
         super().__init__(num_classes=num_classes, device=device, name=f"Torchvision-{model_name}")
         if not hasattr(tv_seg, model_name):
             raise ValueError(f"Unknown torchvision segmentation model '{model_name}'")
-        # Use our central pretrained cache instead of letting torchvision download
-        self.model = build_torchvision_segmentation_model(model_name, pretrained=pretrained)
-        _adjust_head(self.model, num_classes)
-        self.model.to(self.device)
-        
-        # Enable model compilation for faster training (PyTorch 2.0+)
-        # This provides 10-30% speedup on compatible GPUs
-        if hasattr(torch, 'compile') and torch.cuda.is_available():
-            try:
-                self.model = torch.compile(self.model, mode="reduce-overhead")
-                print(f"[INFO] {self.name}: Model compilation enabled for faster training")
-            except Exception as e:
-                print(f"[WARNING] {self.name}: Model compilation failed ({e}), continuing without it")
         
         self.finetune_epochs = finetune_epochs
         self.learning_rate = learning_rate
@@ -84,8 +72,57 @@ class TorchvisionSegmenter(BaseSegmenter):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.model_name = model_name
+        self.pretrained = pretrained
+        
+        # Use our central pretrained cache instead of letting torchvision download
+        self.model = build_torchvision_segmentation_model(model_name, pretrained=pretrained)
+        _adjust_head(self.model, num_classes)
+        self.model.to(self.device)
+        
+        # Try to load checkpoint if available (only if finetune_epochs > 0, meaning we expect trained weights)
+        # Load checkpoint BEFORE compilation, as compiled models may have issues loading state_dict
+        if finetune_epochs > 0:
+            config = self._get_config()
+            checkpoint = load_checkpoint(self.model_name, config, model=self.model, device=self.device)
+            if checkpoint is not None:
+                print(f"[INFO] {self.name}: Loaded checkpoint from previous training")
+                # If checkpoint found, we can skip training
+                self._checkpoint_loaded = True
+            else:
+                self._checkpoint_loaded = False
+        else:
+            self._checkpoint_loaded = False
+        
+        # Enable model compilation for faster training (PyTorch 2.0+)
+        # This provides 10-30% speedup on compatible GPUs
+        # Do this AFTER checkpoint loading
+        if hasattr(torch, 'compile') and torch.cuda.is_available():
+            try:
+                self.model = torch.compile(self.model, mode="reduce-overhead")
+                print(f"[INFO] {self.name}: Model compilation enabled for faster training")
+            except Exception as e:
+                print(f"[WARNING] {self.name}: Model compilation failed ({e}), continuing without it")
 
+    def _get_config(self) -> Dict[str, Any]:
+        """Get configuration dictionary for checkpoint matching."""
+        return {
+            "model_name": self.model_name,
+            "num_classes": self.num_classes,
+            "pretrained": self.pretrained,
+            "finetune_epochs": self.finetune_epochs,
+            "learning_rate": self.learning_rate,
+            "weight_decay": self.weight_decay,
+            "batch_size": self.batch_size,
+            "num_workers": self.num_workers,
+        }
+    
     def prepare(self, train_dataset: Optional[Any] = None, val_dataset: Optional[Any] = None) -> None:
+        # Skip training if checkpoint was already loaded
+        if self._checkpoint_loaded:
+            print(f"[INFO] {self.name}: Skipping training (using loaded checkpoint)")
+            self.model.eval()
+            return
+        
         if self.finetune_epochs <= 0 or train_dataset is None:
             return
         loader = DataLoader(
@@ -181,6 +218,16 @@ class TorchvisionSegmenter(BaseSegmenter):
             print(f"[TRAIN] {self.name} epoch {epoch+1}/{self.finetune_epochs} - avg loss: {avg_loss:.4f} "
                   f"(LR: backbone={current_lr_backbone:.6f}, head={current_lr_head:.6f})")
         self.model.eval()
+        
+        # Save checkpoint after training
+        config = self._get_config()
+        checkpoint_path = save_checkpoint(
+            self.model,
+            self.model_name,
+            config,
+            metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs}
+        )
+        print(f"[INFO] {self.name}: Saved checkpoint to {checkpoint_path}")
 
     def predict_logits(self, batch: Dict[str, Any]) -> Optional[np.ndarray]:
         self.model.eval()
