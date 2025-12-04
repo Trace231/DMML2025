@@ -12,6 +12,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 
 from ..evaluation.registry import register_segmenter
+from ..utils.checkpoint import load_checkpoint, save_checkpoint
 from .base import BaseSegmenter
 
 
@@ -111,8 +112,38 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
         self.weight_decay = weight_decay
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.base_channels = base_channels
+        
+        # Try to load checkpoint if available (only if finetune_epochs > 0, meaning we expect trained weights)
+        if finetune_epochs > 0:
+            config = self._get_config()
+            checkpoint = load_checkpoint("hybrid_unet_transformer", config, model=self.model, device=self.device)
+            if checkpoint is not None:
+                print(f"[INFO] {self.name}: Loaded checkpoint from previous training")
+                self._checkpoint_loaded = True
+            else:
+                self._checkpoint_loaded = False
+        else:
+            self._checkpoint_loaded = False
+
+    def _get_config(self) -> Dict[str, Any]:
+        """Get configuration dictionary for checkpoint matching."""
+        return {
+            "num_classes": self.num_classes,
+            "base_channels": self.base_channels,
+            "finetune_epochs": self.finetune_epochs,
+            "learning_rate": self.learning_rate,
+            "weight_decay": self.weight_decay,
+            "batch_size": self.batch_size,
+            "num_workers": self.num_workers,
+        }
 
     def prepare(self, train_dataset: Optional[Any] = None, val_dataset: Optional[Any] = None) -> None:
+        # Skip training if checkpoint was already loaded
+        if self._checkpoint_loaded:
+            print(f"[INFO] {self.name}: Skipping training (using loaded checkpoint)")
+            self.model.eval()
+            return
         if self.finetune_epochs <= 0 or train_dataset is None:
             return
         loader = DataLoader(
@@ -125,7 +156,9 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
         optimizer = Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         criterion = nn.CrossEntropyLoss()
         self.model.train()
-        for _ in range(self.finetune_epochs):
+        for epoch in range(self.finetune_epochs):
+            epoch_loss = 0.0
+            batch_count = 0
             for batch in loader:
                 images = batch["image"].to(self.device)
                 masks = batch["mask"].squeeze(1).long().to(self.device)
@@ -134,7 +167,21 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
                 loss = criterion(logits, masks)
                 loss.backward()
                 optimizer.step()
+                epoch_loss += loss.item()
+                batch_count += 1
+            avg_loss = epoch_loss / max(batch_count, 1)
+            print(f"[TRAIN] {self.name} epoch {epoch+1}/{self.finetune_epochs} - avg loss: {avg_loss:.4f}")
         self.model.eval()
+        
+        # Save checkpoint after training
+        config = self._get_config()
+        checkpoint_path = save_checkpoint(
+            self.model,
+            "hybrid_unet_transformer",
+            config,
+            metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs}
+        )
+        print(f"[INFO] {self.name}: Saved checkpoint to {checkpoint_path}")
 
     def predict_logits(self, batch: Dict[str, Any]) -> Optional[np.ndarray]:
         self.model.eval()
