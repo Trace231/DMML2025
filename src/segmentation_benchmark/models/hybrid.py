@@ -9,7 +9,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
+from torch.cuda.amp import GradScaler, autocast
 
 from ..evaluation.registry import register_segmenter
 from ..utils.checkpoint import load_checkpoint, save_checkpoint
@@ -140,6 +142,64 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
             "num_workers": self.num_workers,
         }
 
+    def _compute_class_weights(self, loader: DataLoader) -> Optional[torch.Tensor]:
+        """Compute simple inverse-frequency class weights from one pass of the loader.
+
+        This is mainly useful when foreground pixels are very sparse (e.g. CrackForest).
+        For VOC-style multi-class segmentation the imbalance is smaller, but this still
+        gives a small boost by down-weighting dominant background.
+        """
+        # Only attempt if num_classes is reasonably small
+        if self.num_classes <= 1 or self.num_classes > 256:
+            return None
+
+        counts = torch.zeros(self.num_classes, dtype=torch.long)
+        with torch.no_grad():
+            for batch in loader:
+                masks = batch["mask"].squeeze(1).long()
+                # Ignore void label 255 if present
+                valid = (masks >= 0) & (masks < self.num_classes)
+                if not valid.any():
+                    continue
+                flat = masks[valid].view(-1)
+                counts.scatter_add_(0, flat.cpu(), torch.ones_like(flat.cpu(), dtype=torch.long))
+
+        if counts.sum() == 0:
+            return None
+
+        freqs = counts.float() / counts.sum().float()
+        # Inverse frequency; add epsilon to avoid division by zero
+        inv_freq = 1.0 / (freqs + 1e-6)
+        weights = inv_freq / inv_freq.sum()
+        return weights.to(self.device)
+
+    def _dice_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Soft Dice loss for multi-class segmentation.
+
+        - logits: (N, C, H, W)
+        - targets: (N, H, W) with values in [0, C-1] or 255 for void.
+        """
+        num_classes = logits.shape[1]
+        # Create one-hot targets, ignore void=255
+        with torch.no_grad():
+            valid_mask = targets != 255
+            valid_targets = targets.clone()
+            valid_targets[~valid_mask] = 0  # temporary value, will be masked out
+            one_hot = F.one_hot(valid_targets.clamp(min=0, max=num_classes - 1), num_classes=num_classes)
+            one_hot = one_hot.permute(0, 3, 1, 2).float()  # (N, C, H, W)
+            one_hot = one_hot * valid_mask.unsqueeze(1)  # zero-out void positions
+
+        probs = torch.softmax(logits, dim=1)
+        probs = probs * valid_mask.unsqueeze(1)  # ignore void
+
+        dims = (0, 2, 3)
+        numerator = 2.0 * (probs * one_hot).sum(dim=dims)
+        denominator = probs.sum(dim=dims) + one_hot.sum(dim=dims) + 1e-6
+        dice_per_class = 1.0 - numerator / denominator
+
+        # Average over classes
+        return dice_per_class.mean()
+
     def prepare(self, train_dataset: Optional[Any] = None, val_dataset: Optional[Any] = None) -> None:
         # Skip training if checkpoint was already loaded
         if self._checkpoint_loaded:
@@ -148,6 +208,7 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
             return
         if self.finetune_epochs <= 0 or train_dataset is None:
             return
+
         loader = DataLoader(
             train_dataset,
             batch_size=self.batch_size,
@@ -155,8 +216,27 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
             num_workers=self.num_workers,
             pin_memory=True,
         )
+
+        # Compute simple class-balanced weights to mitigate foreground/background imbalance.
+        class_weights = self._compute_class_weights(loader)
+        if class_weights is not None:
+            print(f"[INFO] {self.name}: Using class-balanced CE weights: {class_weights.detach().cpu().numpy()}")
+
+        # VOC-style masks use 0–20 as valid class indices and 255 as "void/ignore".
+        # Use ignore_index=255 to avoid invalid-label errors when training on VOC.
+        ce_criterion = nn.CrossEntropyLoss(weight=class_weights, ignore_index=255)
+
         optimizer = Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
-        criterion = nn.CrossEntropyLoss()
+
+        # Cosine LR schedule from initial LR to 10% of initial LR over finetune_epochs.
+        scheduler = CosineAnnealingLR(optimizer, T_max=self.finetune_epochs, eta_min=self.learning_rate * 0.1)
+
+        # Enable mixed precision training when possible (mirrors CNN segmenter behaviour).
+        scaler = GradScaler('cuda')
+        use_amp = torch.cuda.is_available() and hasattr(torch.amp, 'autocast')
+        if use_amp:
+            print(f"[INFO] {self.name}: Mixed precision training (AMP) enabled")
+
         self.model.train()
         for epoch in range(self.finetune_epochs):
             epoch_loss = 0.0
@@ -165,14 +245,36 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
                 images = batch["image"].to(self.device)
                 masks = batch["mask"].squeeze(1).long().to(self.device)
                 optimizer.zero_grad()
-                logits = self.model(images)
-                loss = criterion(logits, masks)
-                loss.backward()
-                optimizer.step()
+
+                if use_amp:
+                    with autocast('cuda'):
+                        logits = self.model(images)
+                        ce_loss = ce_criterion(logits, masks)
+                        dice_loss = self._dice_loss(logits, masks)
+                        loss = ce_loss + dice_loss
+
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    logits = self.model(images)
+                    ce_loss = ce_criterion(logits, masks)
+                    dice_loss = self._dice_loss(logits, masks)
+                    loss = ce_loss + dice_loss
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    optimizer.step()
+
                 epoch_loss += loss.item()
                 batch_count += 1
+
+            scheduler.step()
+
             avg_loss = epoch_loss / max(batch_count, 1)
             print(f"[TRAIN] {self.name} epoch {epoch+1}/{self.finetune_epochs} - avg loss: {avg_loss:.4f}")
+
         self.model.eval()
         
         # Save checkpoint after training
