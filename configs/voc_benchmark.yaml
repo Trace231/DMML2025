@@ -25,8 +25,8 @@ models:
     builder: classical_crf
     params:
       config:
-        sample_pixels: 6000
-        crf_iterations: 5
+        sample_pixels: 10000  # 增加采样像素数，提高特征学习能力
+        crf_iterations: 20  # 保持20次迭代，确保充分优化
         gaussian_sxy: 3
         bilateral_sxy: 50
         bilateral_srgb: 13
@@ -36,7 +36,7 @@ models:
     builder: fcn_resnet50
     params:
       pretrained: true
-      finetune_epochs: 50
+      finetune_epochs: 80
       learning_rate: 0.001  # Increased for better convergence (head LR=0.001, backbone LR=0.0001)
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
@@ -44,7 +44,7 @@ models:
     builder: deeplabv3_resnet50
     params:
       pretrained: true
-      finetune_epochs: 50
+      finetune_epochs: 80
       learning_rate: 0.001  # Increased for better convergence (head LR=0.001, backbone LR=0.0001)
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
@@ -52,7 +52,7 @@ models:
   - name: segformer_b0
     builder: segformer_b0
     params:
-      finetune_epochs: 50
+      finetune_epochs: 80
       learning_rate: 0.00005
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
@@ -61,7 +61,7 @@ models:
   - name: ddp
     builder: ddp
     params:
-      finetune_epochs: 50
+      finetune_epochs: 80
       learning_rate: 0.0001
       weight_decay: 1e-4
       batch_size: 8  # Smaller batch size for diffusion model
@@ -75,7 +75,7 @@ models:
     builder: hybrid_unet_transformer
     params:
       base_channels: 32
-      finetune_epochs: 50
+      finetune_epochs: 80
       learning_rate: 0.001
       weight_decay: 1e-4
       batch_size: 12
@@ -88,16 +88,18 @@ models:
       config:
         base_model: "fcn_resnet50"
         pretrained: true
-        finetune_epochs: 50
+        finetune_epochs: 80
         learning_rate: 0.001
         weight_decay: 1e-4
         batch_size: 12
         num_workers: 14
         crf_params:
-          iterations: 5
+          iterations: 20  # 增加到10次迭代，提高CRF优化效果
           gaussian_sxy: 3
-          bilateral_sxy: 80
+          bilateral_sxy: 60  # 调整为60，更适合256x256图像
           bilateral_srgb: 13
+          compat_gaussian: 3
+          compat_bilateral: 10
   
   - name: cnn_crf_deeplabv3
     builder: cnn_crf
@@ -105,16 +107,18 @@ models:
       config:
         base_model: "deeplabv3_resnet50"
         pretrained: true
-        finetune_epochs: 50
+        finetune_epochs: 80
         learning_rate: 0.001
         weight_decay: 1e-4
         batch_size: 12
         num_workers: 14
         crf_params:
-          iterations: 5
+          iterations: 20  # 增加到10次迭代，提高CRF优化效果
           gaussian_sxy: 3
-          bilateral_sxy: 80
+          bilateral_sxy: 60  # 调整为60，更适合256x256图像
           bilateral_srgb: 13
+          compat_gaussian: 3
+          compat_bilateral: 10
   
   # ========== 任意模型 + CRF 后处理 ==========
   # CRF后处理评估 - 为所有模型添加CRF后处理版本
@@ -130,10 +134,12 @@ models:
         batch_size: 12
         num_workers: 14
       crf_params:
-        iterations: 5
+        iterations: 10  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
-        bilateral_sxy: 80
+        bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
+        compat_gaussian: 3
+        compat_bilateral: 10
   - name: deeplabv3_resnet50_crf_post
     builder: crf_wrapper
     params:
@@ -145,10 +151,12 @@ models:
         batch_size: 12
         num_workers: 14
       crf_params:
-        iterations: 5
+        iterations: 10  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
-        bilateral_sxy: 80
+        bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
+        compat_gaussian: 3
+        compat_bilateral: 10
   - name: segformer_b0_crf_post
     builder: crf_wrapper
     params:
@@ -159,10 +167,12 @@ models:
         batch_size: 12
         num_workers: 14
       crf_params:
-        iterations: 5
+        iterations: 10  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
-        bilateral_sxy: 80
+        bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
+        compat_gaussian: 3
+        compat_bilateral: 10
   - name: hybrid_unet_transformer_crf_post
     builder: crf_wrapper
     params:
@@ -175,10 +185,12 @@ models:
         batch_size: 12
         num_workers: 14
       crf_params:
-        iterations: 5
+        iterations: 10  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
-        bilateral_sxy: 80
+        bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
+        compat_gaussian: 3
+        compat_bilateral: 10
   - name: ddp_crf_post
     builder: crf_wrapper
     params:
@@ -193,8 +205,10 @@ models:
         inference_steps: 50
         base_channels: 64
       crf_params:
-        iterations: 5
+        iterations: 10  # 增加到10次迭代，提高CRF优化效果
         gaussian_sxy: 3
-        bilateral_sxy: 80
+        bilateral_sxy: 60  # 调整为60，更适合256x256图像
         bilateral_srgb: 13
+        compat_gaussian: 3
+        compat_bilateral: 10
 
