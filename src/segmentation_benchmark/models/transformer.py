@@ -16,6 +16,44 @@ from ..utils.pretrained import get_huggingface_cache_dir
 from .base import BaseSegmenter
 
 
+def _load_huggingface_model_with_auto_download(
+    model_class,
+    model_name: str,
+    cache_dir: str,
+):
+    """Load a HuggingFace model, trying local files first, then downloading if needed.
+    
+    This function first attempts to load the model from local cache. If the model
+    is not found locally, it will automatically download from the internet.
+    """
+    try:
+        # First, try to load from local cache only
+        return model_class.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            local_files_only=True,
+        )
+    except (OSError, ValueError) as e:
+        # If local files are missing, try to download from internet
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"Model '{model_name}' not found in local cache. Attempting to download from HuggingFace Hub..."
+        )
+        try:
+            return model_class.from_pretrained(
+                model_name,
+                cache_dir=cache_dir,
+                local_files_only=False,
+            )
+        except Exception as download_error:
+            logger.error(
+                f"Failed to download model '{model_name}': {download_error}. "
+                f"Original error: {e}"
+            )
+            raise
+
+
 @register_segmenter("segformer")
 class SegformerSegmenter(BaseSegmenter):
     def __init__(
@@ -32,17 +70,17 @@ class SegformerSegmenter(BaseSegmenter):
         display_name = model_name.split("/")[-1]
         super().__init__(num_classes=num_classes, device=device, name=f"SegFormer-{display_name}")
         cache_dir = get_huggingface_cache_dir()
-        # Use a shared project-local cache dir for all HuggingFace models, and
-        # force offline usage at runtime (weights & configs must be pre-downloaded).
-        self.processor = SegformerImageProcessor.from_pretrained(
+        # Use a shared project-local cache dir for all HuggingFace models.
+        # Try local files first, then automatically download if missing.
+        self.processor = _load_huggingface_model_with_auto_download(
+            SegformerImageProcessor,
             model_name,
-            cache_dir=cache_dir,
-            local_files_only=True,
+            cache_dir,
         )
-        self.model = SegformerForSemanticSegmentation.from_pretrained(
+        self.model = _load_huggingface_model_with_auto_download(
+            SegformerForSemanticSegmentation,
             model_name,
-            cache_dir=cache_dir,
-            local_files_only=True,
+            cache_dir,
         )
         if self.model.config.num_labels != num_classes:
             in_channels = self.model.decode_head.classifier.in_channels

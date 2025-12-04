@@ -7,7 +7,9 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.amp import autocast, GradScaler
 from torch.optim import Adam
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from torchvision.models import segmentation as tv_seg
 
@@ -22,16 +24,27 @@ def _default_weights(model_name: str):
 
 
 def _adjust_head(model: nn.Module, num_classes: int) -> None:
+    """Adjust model head to match num_classes and initialize new layers properly."""
     if hasattr(model, "classifier") and isinstance(model.classifier, nn.Sequential):
         last_layer = model.classifier[-1]
         if isinstance(last_layer, nn.Conv2d) and last_layer.out_channels != num_classes:
             in_channels = last_layer.in_channels
-            model.classifier[-1] = nn.Conv2d(in_channels, num_classes, kernel_size=1)
+            new_layer = nn.Conv2d(in_channels, num_classes, kernel_size=1)
+            # Initialize new classification layer with Kaiming initialization
+            nn.init.kaiming_normal_(new_layer.weight, mode='fan_out', nonlinearity='relu')
+            if new_layer.bias is not None:
+                nn.init.constant_(new_layer.bias, 0)
+            model.classifier[-1] = new_layer
     if hasattr(model, "aux_classifier") and isinstance(model.aux_classifier, nn.Sequential):
         last_layer = model.aux_classifier[-1]
         if isinstance(last_layer, nn.Conv2d) and last_layer.out_channels != num_classes:
             in_channels = last_layer.in_channels
-            model.aux_classifier[-1] = nn.Conv2d(in_channels, num_classes, kernel_size=1)
+            new_layer = nn.Conv2d(in_channels, num_classes, kernel_size=1)
+            # Initialize auxiliary classifier with Kaiming initialization
+            nn.init.kaiming_normal_(new_layer.weight, mode='fan_out', nonlinearity='relu')
+            if new_layer.bias is not None:
+                nn.init.constant_(new_layer.bias, 0)
+            model.aux_classifier[-1] = new_layer
 
 
 @register_segmenter("torchvision")
@@ -55,6 +68,16 @@ class TorchvisionSegmenter(BaseSegmenter):
         self.model = build_torchvision_segmentation_model(model_name, pretrained=pretrained)
         _adjust_head(self.model, num_classes)
         self.model.to(self.device)
+        
+        # Enable model compilation for faster training (PyTorch 2.0+)
+        # This provides 10-30% speedup on compatible GPUs
+        if hasattr(torch, 'compile') and torch.cuda.is_available():
+            try:
+                self.model = torch.compile(self.model, mode="reduce-overhead")
+                print(f"[INFO] {self.name}: Model compilation enabled for faster training")
+            except Exception as e:
+                print(f"[WARNING] {self.name}: Model compilation failed ({e}), continuing without it")
+        
         self.finetune_epochs = finetune_epochs
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
@@ -75,7 +98,38 @@ class TorchvisionSegmenter(BaseSegmenter):
         # Use ignore_index=255 so VOC "void" pixels are not penalised during training.
         # The dataset keeps 0-20 as valid class indices and 255 as void.
         criterion = nn.CrossEntropyLoss(ignore_index=255)
-        optimizer = Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        
+        # Use different learning rates for backbone and classification head
+        # Backbone (pretrained) uses smaller LR, head (random init) uses larger LR
+        backbone_params = []
+        head_params = []
+        for name, param in self.model.named_parameters():
+            if 'classifier' in name or 'aux_classifier' in name:
+                head_params.append(param)
+            else:
+                backbone_params.append(param)
+        
+        # Head gets 10x larger learning rate since it's randomly initialized
+        optimizer = Adam(
+            [
+                {'params': backbone_params, 'lr': self.learning_rate * 0.1},
+                {'params': head_params, 'lr': self.learning_rate}
+            ],
+            weight_decay=self.weight_decay
+        )
+        
+        # Learning rate scheduler: cosine annealing from initial LR to 1/10 of initial LR
+        # This allows high LR early (fast learning) and moderate LR late (fine-tuning)
+        # Final LR will be 10% of initial, which is a good fine-tuning rate
+        scheduler = CosineAnnealingLR(optimizer, T_max=self.finetune_epochs, eta_min=self.learning_rate * 0.1)
+        
+        # Enable mixed precision training for 1.5-2x speedup on V100
+        # V100 has Tensor Cores that accelerate FP16 operations significantly
+        scaler = GradScaler('cuda')
+        use_amp = torch.cuda.is_available() and hasattr(torch.amp, 'autocast')
+        if use_amp:
+            print(f"[INFO] {self.name}: Mixed precision training (AMP) enabled")
+        
         self.model.train()
         for epoch in range(self.finetune_epochs):
             epoch_loss = 0.0
@@ -84,19 +138,48 @@ class TorchvisionSegmenter(BaseSegmenter):
                 images = batch["image"].to(self.device)
                 masks = batch["mask"].squeeze(1).long().to(self.device)
                 optimizer.zero_grad()
-                outputs = self.model(images)
-                logits = outputs["out"]
-                loss = criterion(logits, masks)
-                if "aux" in outputs and outputs["aux"] is not None:
-                    loss = loss + 0.3 * criterion(outputs["aux"], masks)
-                loss.backward()
-                optimizer.step()
+                
+                # Use mixed precision training if available
+                if use_amp:
+                    with autocast('cuda'):
+                        outputs = self.model(images)
+                        logits = outputs["out"]
+                        loss = criterion(logits, masks)
+                        if "aux" in outputs and outputs["aux"] is not None:
+                            loss = loss + 0.3 * criterion(outputs["aux"], masks)
+                    
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    # Fallback to FP32 training
+                    outputs = self.model(images)
+                    logits = outputs["out"]
+                    loss = criterion(logits, masks)
+                    if "aux" in outputs and outputs["aux"] is not None:
+                        loss = loss + 0.3 * criterion(outputs["aux"], masks)
+                    loss.backward()
+                    
+                    # Gradient clipping to prevent exploding gradients
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    optimizer.step()
                 
                 epoch_loss += loss.item()
                 batch_count += 1
             
+            # Update learning rate at end of each epoch
+            scheduler.step()
+            
+            # Get current learning rates for logging
+            current_lr_backbone = optimizer.param_groups[0]['lr']
+            current_lr_head = optimizer.param_groups[1]['lr']
+            
             avg_loss = epoch_loss / max(batch_count, 1)
-            print(f"[TRAIN] {self.name} epoch {epoch+1}/{self.finetune_epochs} - avg loss: {avg_loss:.4f}")
+            print(f"[TRAIN] {self.name} epoch {epoch+1}/{self.finetune_epochs} - avg loss: {avg_loss:.4f} "
+                  f"(LR: backbone={current_lr_backbone:.6f}, head={current_lr_head:.6f})")
         self.model.eval()
 
     def predict_logits(self, batch: Dict[str, Any]) -> Optional[np.ndarray]:

@@ -84,7 +84,7 @@ class ClassicalCRFSegmenter(BaseSegmenter):
         if train_dataset is None:
             raise ValueError("ClassicalCRFSegmenter requires a training dataset to fit the random forest")
 
-        # 将 sample_pixels 理解为“整个训练集总采样像素数”上限
+        # 将 sample_pixels 理解为"整个训练集总采样像素数"上限
         num_images = len(train_dataset)
         # 每张图最多采这么多像素，保证总数不超过 sample_pixels
         pixels_per_image = max(1, self.config.sample_pixels // max(1, num_images))
@@ -98,7 +98,17 @@ class ClassicalCRFSegmenter(BaseSegmenter):
             feats = self._extract_features(image)
             labels = mask.reshape(-1)
 
-            # 这里不再用“每张图 sample_pixels 个像素”，
+            # 过滤掉无效标签（例如 VOC 数据集中的 255 忽略标签）
+            # 只保留有效的类别标签（0 到 num_classes-1）
+            valid_mask = labels < self.num_classes
+            feats = feats[valid_mask]
+            labels = labels[valid_mask]
+
+            # 如果过滤后没有有效像素，跳过这张图
+            if len(labels) == 0:
+                continue
+
+            # 这里不再用"每张图 sample_pixels 个像素"，
             # 而是每张图最多 pixels_per_image，整个训练集合计 <= sample_pixels
             if len(labels) > pixels_per_image:
                 idx = self._rng.choice(len(labels), size=pixels_per_image, replace=False)

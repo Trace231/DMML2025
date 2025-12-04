@@ -5,12 +5,12 @@ dataset:
   download: true
   year: "2012"
   image_size: 256
-  batch_size: 2
-  num_workers: 0
+  batch_size: 6
+  num_workers: 14
   augment: true
   train_ratio: 0.6
   val_ratio: 0.2
-  sample_limit: 100  # Limit to 100 samples (train+val+test together)
+  sample_limit: 10000  # Limit total samples (train+val+test together). Set to null/empty to use all available samples.
   seed: 42
   num_classes: 21  # Pascal VOC has 21 classes (0=background, 1-20=object classes)
 
@@ -20,35 +20,36 @@ evaluation:
   save_predictions: false
 
 models:
-  - name: classical_crf
-    builder: classical_crf
-    params:
-      config:
-        sample_pixels: 6000
-        crf_iterations: 5
-        gaussian_sxy: 3
-        bilateral_sxy: 50
-        bilateral_srgb: 13
+  # - name: classical_crf
+  #   builder: classical_crf
+  #   params:
+  #     config:
+  #       sample_pixels: 6000
+  #       crf_iterations: 5
+  #       gaussian_sxy: 3
+  #       bilateral_sxy: 50
+  #       bilateral_srgb: 13
   - name: fcn_resnet50
     builder: fcn_resnet50
     params:
       pretrained: true
-      finetune_epochs: 0
-      learning_rate: 0.0005
-      batch_size: 2
-      num_workers: 0
+      finetune_epochs: 50
+      learning_rate: 0.001  # Increased for better convergence (head LR=0.001, backbone LR=0.0001)
+      batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
+      num_workers: 14
   - name: deeplabv3_resnet50
     builder: deeplabv3_resnet50
     params:
       pretrained: true
-      finetune_epochs: 0
-      learning_rate: 0.0005
-      batch_size: 2
-      num_workers: 0
+      finetune_epochs: 50
+      learning_rate: 0.001  # Increased for better convergence (head LR=0.001, backbone LR=0.0001)
+      batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
+      num_workers: 14
   - name: segformer_b0
     builder: segformer_b0
     params:
-      finetune_epochs: 0
+      finetune_epochs: 50
       learning_rate: 0.00005
-      batch_size: 1
+      batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
+      num_workers: 14
 

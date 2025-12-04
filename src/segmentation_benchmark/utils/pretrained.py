@@ -44,9 +44,38 @@ def get_pretrained_root() -> Path:
 # ---------------------------------------------------------------------------
 
 def _get_segmentation_weights_enum(model_name: str) -> Optional[type[WeightsEnum]]:
-    """Return the WeightsEnum class for a torchvision segmentation model, if any."""
+    """Return the WeightsEnum class for a torchvision segmentation model, if any.
+    
+    This function tries multiple naming conventions to find the correct weights enum.
+    Torchvision uses inconsistent naming (e.g., FCN_ResNet50_Weights for fcn_resnet50).
+    """
+    # Method 1: Direct uppercase (FCN_RESNET50_Weights)
     enum_name = f"{model_name.upper()}_Weights"
-    return getattr(tv_seg, enum_name, None)
+    result = getattr(tv_seg, enum_name, None)
+    if result is not None:
+        return result
+    
+    # Method 2: Capitalize each word separated by underscore (Fcn_Resnet50_Weights)
+    parts = model_name.split('_')
+    enum_name = '_'.join(p.capitalize() for p in parts) + '_Weights'
+    result = getattr(tv_seg, enum_name, None)
+    if result is not None:
+        return result
+    
+    # Method 3: Search through all weights enums to find one matching the model name
+    # This handles cases like FCN_ResNet50_Weights for fcn_resnet50
+    model_name_lower = model_name.lower()
+    model_name_normalized = model_name_lower.replace('_', '')
+    for attr in dir(tv_seg):
+        if attr.endswith('_Weights'):
+            obj = getattr(tv_seg, attr)
+            if isinstance(obj, type) and issubclass(obj, WeightsEnum):
+                # Check if the enum name matches the model name (case-insensitive, ignore underscores)
+                enum_name_normalized = attr[:-8].lower().replace('_', '')
+                if enum_name_normalized == model_name_normalized:
+                    return obj
+    
+    return None
 
 
 def get_torchvision_weights_file(weights: WeightsEnum) -> Path:
