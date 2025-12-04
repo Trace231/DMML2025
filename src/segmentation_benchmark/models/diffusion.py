@@ -246,10 +246,18 @@ class DDPSegmenter(BaseSegmenter):
         }
     
     def _extract(self, a: torch.Tensor, t: torch.Tensor, x_shape: tuple) -> torch.Tensor:
-        """Extract values from tensor a at indices t."""
+        """Extract values from tensor ``a`` at indices ``t``, keeping everything on the same device."""
+        # Ensure indices are integer type and on the same device as the source tensor
+        if t.dtype != torch.long:
+            t = t.long()
+        if a.device != t.device:
+            a = a.to(t.device)
+        
         batch_size = t.shape[0]
-        out = a.gather(-1, t.cpu())
-        return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
+        # ``a`` is a 1D tensor of length ``num_timesteps``; we gather along dim 0
+        out = a.gather(0, t)
+        # Reshape to broadcast correctly with ``x_shape``
+        return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
     
     def _q_sample(self, x_start: torch.Tensor, t: torch.Tensor, noise: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Forward diffusion: add noise to masks."""
