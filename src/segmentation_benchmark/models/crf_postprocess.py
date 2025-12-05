@@ -51,6 +51,36 @@ class CrfParams:
             )
 
 
+@dataclass
+class AdaptiveCrfConfig:
+    """Configuration for adaptive CRF parameter adjustment."""
+    # Base parameters (used as starting point)
+    base_iterations: int = 5
+    base_gaussian_sxy: int = 3
+    base_bilateral_sxy: int = 30
+    base_bilateral_srgb: int = 13
+    base_compat_gaussian: int = 3
+    base_compat_bilateral: int = 10
+    
+    # Adaptive scaling factors
+    scale_by_image_size: bool = True  # Adjust spatial params based on image size
+    scale_by_entropy: bool = True  # Adjust iterations based on prediction uncertainty
+    scale_by_contrast: bool = False  # Adjust bilateral params based on image contrast
+    
+    # Size scaling: reference size is 256x256
+    reference_size: int = 256
+    
+    # Entropy-based scaling
+    entropy_threshold_low: float = 0.3  # Low entropy -> fewer iterations
+    entropy_threshold_high: float = 0.7  # High entropy -> more iterations
+    min_iterations: int = 3
+    max_iterations: int = 10
+    
+    # Contrast-based scaling (if enabled)
+    contrast_threshold_low: float = 0.1
+    contrast_threshold_high: float = 0.3
+
+
 class CrfPostProcessor:
     def __init__(self, num_classes: int = 2, params: CrfParams | None = None) -> None:
         if dcrf is None or unary_from_softmax is None:
@@ -59,7 +89,7 @@ class CrfPostProcessor:
         self.params = params or CrfParams()
 
     def refine(self, image: Any, logits: Any) -> np.ndarray:
-        image_np = self._ensure_image(image)
+        image_np = CrfPostProcessor._ensure_image(image)
         probabilities = self._ensure_probabilities(logits)
         h, w = image_np.shape[:2]
         dense = dcrf.DenseCRF2D(w, h, self.num_classes)
@@ -138,6 +168,7 @@ class CrfPostProcessor:
         return np.ascontiguousarray(image)
 
     def _ensure_probabilities(self, logits: Any) -> np.ndarray:
+        """Convert logits to probability distribution."""
         import torch
 
         if isinstance(logits, torch.Tensor):
@@ -155,6 +186,188 @@ class CrfPostProcessor:
         return np.ascontiguousarray(probabilities.astype(np.float32))
 
 
+class AdaptiveCrfPostProcessor:
+    """Adaptive CRF post-processor that adjusts parameters based on image characteristics."""
+    
+    def __init__(
+        self, 
+        num_classes: int = 2, 
+        config: AdaptiveCrfConfig | Dict[str, Any] | None = None
+    ) -> None:
+        if dcrf is None or unary_from_softmax is None:
+            raise ImportError("pydensecrf is required for CRF post processing")
+        self.num_classes = num_classes
+        if isinstance(config, dict):
+            config = AdaptiveCrfConfig(**config)
+        self.config = config or AdaptiveCrfConfig()
+    
+    def _compute_entropy(self, probabilities: np.ndarray) -> float:
+        """Compute mean entropy of probability distribution."""
+        # probabilities shape: (C, H, W)
+        # Avoid log(0)
+        probs_clipped = np.clip(probabilities, 1e-10, 1.0)
+        entropy = -np.sum(probs_clipped * np.log(probs_clipped), axis=0)
+        return float(np.mean(entropy))
+    
+    def _compute_contrast(self, image: np.ndarray) -> float:
+        """Compute image contrast (standard deviation of grayscale)."""
+        if image.ndim == 3:
+            gray = np.mean(image, axis=2)
+        else:
+            gray = image
+        return float(np.std(gray) / 255.0)  # Normalize to [0, 1]
+    
+    def _adapt_params(
+        self, 
+        image: np.ndarray, 
+        probabilities: np.ndarray
+    ) -> CrfParams:
+        """Adaptively compute CRF parameters based on image and prediction characteristics."""
+        h, w = image.shape[:2]
+        
+        # Start with base parameters
+        params = CrfParams(
+            iterations=self.config.base_iterations,
+            gaussian_sxy=self.config.base_gaussian_sxy,
+            bilateral_sxy=self.config.base_bilateral_sxy,
+            bilateral_srgb=self.config.base_bilateral_srgb,
+            compat_gaussian=self.config.base_compat_gaussian,
+            compat_bilateral=self.config.base_compat_bilateral,
+        )
+        
+        # 1. Scale by image size
+        if self.config.scale_by_image_size:
+            size_ratio = np.sqrt((h * w) / (self.config.reference_size ** 2))
+            # Scale spatial parameters proportionally
+            params.bilateral_sxy = int(np.clip(
+                self.config.base_bilateral_sxy * size_ratio,
+                10, 80  # Reasonable bounds
+            ))
+            params.gaussian_sxy = max(1, int(self.config.base_gaussian_sxy * np.sqrt(size_ratio)))
+        
+        # 2. Scale iterations by entropy (uncertainty)
+        if self.config.scale_by_entropy:
+            entropy = self._compute_entropy(probabilities)
+            # Normalize entropy to [0, 1] range (max entropy for 2 classes is log(2) ≈ 0.693)
+            max_entropy = np.log(self.num_classes)
+            normalized_entropy = entropy / max_entropy
+            
+            # Map entropy to iteration count
+            if normalized_entropy < self.config.entropy_threshold_low:
+                # Low uncertainty: fewer iterations
+                iteration_factor = 0.6
+            elif normalized_entropy > self.config.entropy_threshold_high:
+                # High uncertainty: more iterations
+                iteration_factor = 1.4
+            else:
+                # Medium uncertainty: linear interpolation
+                t = (normalized_entropy - self.config.entropy_threshold_low) / (
+                    self.config.entropy_threshold_high - self.config.entropy_threshold_low
+                )
+                iteration_factor = 0.6 + 0.8 * t
+            
+            params.iterations = int(np.clip(
+                self.config.base_iterations * iteration_factor,
+                self.config.min_iterations,
+                self.config.max_iterations
+            ))
+        
+        # 3. Scale bilateral parameters by image contrast (optional)
+        if self.config.scale_by_contrast:
+            contrast = self._compute_contrast(image)
+            if contrast < self.config.contrast_threshold_low:
+                # Low contrast: stronger bilateral smoothing
+                contrast_factor = 1.2
+            elif contrast > self.config.contrast_threshold_high:
+                # High contrast: weaker bilateral smoothing
+                contrast_factor = 0.8
+            else:
+                contrast_factor = 1.0
+            
+            params.compat_bilateral = int(np.clip(
+                self.config.base_compat_bilateral * contrast_factor,
+                5, 20
+            ))
+        
+        return params
+    
+    def refine(self, image: Any, logits: Any) -> np.ndarray:
+        """Refine predictions using adaptively computed CRF parameters."""
+        image_np = AdaptiveCrfPostProcessor._ensure_image(image)
+        probabilities = self._ensure_probabilities(logits)
+        h, w = image_np.shape[:2]
+        
+        # Compute adaptive parameters
+        params = self._adapt_params(image_np, probabilities)
+        
+        # Apply CRF with adaptive parameters
+        dense = dcrf.DenseCRF2D(w, h, self.num_classes)
+        unary = unary_from_softmax(probabilities)
+        dense.setUnaryEnergy(unary)
+        dense.addPairwiseGaussian(sxy=params.gaussian_sxy, compat=params.compat_gaussian)
+        dense.addPairwiseBilateral(
+            sxy=params.bilateral_sxy,
+            srgb=params.bilateral_srgb,
+            rgbim=image_np,
+            compat=params.compat_bilateral,
+        )
+        q = dense.inference(params.iterations)
+        refined = np.argmax(np.array(q).reshape(self.num_classes, h, w), axis=0)
+        return refined.astype(np.int64)
+    
+    @staticmethod
+    def _ensure_image(image: Any) -> np.ndarray:
+        """Convert image to uint8 RGB format for CRF."""
+        import torch
+
+        if isinstance(image, torch.Tensor):
+            image = image.detach().cpu().numpy()
+            if image.ndim == 4:
+                image = image[0]
+            if image.ndim == 3 and image.shape[0] == 3:
+                image = np.transpose(image, (1, 2, 0))
+        
+        image = np.asarray(image, dtype=np.float32)
+        img_min, img_max = image.min(), image.max()
+        is_imagenet_normalized = img_min < -0.5 or (img_min < 0 and img_max > 1.5)
+        
+        if is_imagenet_normalized:
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            if image.ndim == 3:
+                if image.shape[0] == 3 and image.shape[2] != 3:
+                    image = np.transpose(image, (1, 2, 0))
+                if image.shape[-1] == 3:
+                    image = image * std + mean
+                else:
+                    image = image * std[0] + mean[0]
+            image = np.clip(image, 0.0, 1.0)
+            image = (image * 255.0).astype(np.uint8)
+        elif img_max <= 1.0:
+            image = (image * 255.0).astype(np.uint8)
+        else:
+            image = np.clip(image, 0, 255).astype(np.uint8)
+        
+        return np.ascontiguousarray(image)
+    
+    def _ensure_probabilities(self, logits: Any) -> np.ndarray:
+        """Convert logits to probability distribution."""
+        import torch
+
+        if isinstance(logits, torch.Tensor):
+            logits = logits.detach().cpu().numpy()
+        logits = np.asarray(logits)
+        if logits.ndim == 4:
+            logits = logits[0]
+        if logits.shape[0] != self.num_classes:
+            raise ValueError("Logits must have shape (C, H, W)")
+        logits = logits.astype(np.float64)
+        logits -= logits.max(axis=0, keepdims=True)
+        exp = np.exp(logits)
+        probabilities = exp / (exp.sum(axis=0, keepdims=True) + 1e-10)
+        return np.ascontiguousarray(probabilities.astype(np.float32))
+
+
 @register_segmenter("crf_wrapper")
 class CrfWrappedSegmenter(BaseSegmenter):
     """Wrap an existing segmenter and apply DenseCRF post-processing."""
@@ -169,8 +382,15 @@ class CrfWrappedSegmenter(BaseSegmenter):
         use_trained_base: bool = True,
         use_soft_onehot: bool = True,
         enable_crf: bool = True,
+        use_adaptive_crf: bool = True,
+        adaptive_crf_config: Optional[Dict[str, Any]] = None,
     ) -> None:
-        suffix = "CRFPost" if enable_crf else "NoCRF"
+        if enable_crf and use_adaptive_crf:
+            suffix = "AdaptiveCRF"
+        elif enable_crf:
+            suffix = "CRFPost"
+        else:
+            suffix = "NoCRF"
         super().__init__(num_classes=num_classes, name=name or f"{base_builder}-{suffix}")
         base_params = dict(base_params or {})
         base_params.setdefault("num_classes", num_classes)
@@ -204,8 +424,14 @@ class CrfWrappedSegmenter(BaseSegmenter):
         self.use_soft_onehot = use_soft_onehot
         
         if enable_crf:
-            params = CrfParams(**crf_params) if isinstance(crf_params, dict) else crf_params
-            self.post = CrfPostProcessor(num_classes=num_classes, params=params)
+            if use_adaptive_crf:
+                self.post = AdaptiveCrfPostProcessor(
+                    num_classes=num_classes, 
+                    config=adaptive_crf_config
+                )
+            else:
+                params = CrfParams(**crf_params) if isinstance(crf_params, dict) else crf_params
+                self.post = CrfPostProcessor(num_classes=num_classes, params=params)
         else:
             self.post = None
 
