@@ -6,7 +6,7 @@ dataset:
   year: "2012"
   image_size: 256
   batch_size: 6
-  num_workers: 14
+  num_workers: 62
   augment: true
   train_ratio: 0.6
   val_ratio: 0.2
@@ -121,58 +121,80 @@ models:
           compat_bilateral: 10
   
   # ========== 任意模型 + CRF 后处理 ==========
-  # CRF后处理评估 - 为所有模型添加CRF后处理版本
-  # 注意：如果前面训练过相同配置的基础模型，会自动加载训练好的checkpoint
-  - name: fcn_resnet50_crf_post
-    builder: crf_wrapper
-    params:
-      base_builder: fcn_resnet50
-      base_params:
-        pretrained: true
-        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用，否则使用官方预训练权重
-        learning_rate: 0.001
-        batch_size: 12
-        num_workers: 14
-      crf_params:
-        iterations: 20  # 增加到10次迭代，提高CRF优化效果
-        gaussian_sxy: 3
-        bilateral_sxy: 60  # 调整为60，更适合256x256图像
-        bilateral_srgb: 13
-        compat_gaussian: 3
-        compat_bilateral: 10
-  - name: deeplabv3_resnet50_crf_post
-    builder: crf_wrapper
-    params:
-      base_builder: deeplabv3_resnet50
-      base_params:
-        pretrained: true
-        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用，否则使用官方预训练权重
-        learning_rate: 0.001
-        batch_size: 12
-        num_workers: 14
-      crf_params:
-        iterations: 20  # 增加到10次迭代，提高CRF优化效果
-        gaussian_sxy: 3
-        bilateral_sxy: 60  # 调整为60，更适合256x256图像
-        bilateral_srgb: 13
-        compat_gaussian: 3
-        compat_bilateral: 10
-  - name: segformer_b0_crf_post
-    builder: crf_wrapper
-    params:
-      base_builder: segformer_b0
-      base_params:
-        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用，否则使用官方预训练权重
-        learning_rate: 0.00005
-        batch_size: 12
-        num_workers: 14
-      crf_params:
-        iterations: 20  # 增加到10次迭代，提高CRF优化效果
-        gaussian_sxy: 3
-        bilateral_sxy: 60  # 调整为60，更适合256x256图像
-        bilateral_srgb: 13
-        compat_gaussian: 3
-        compat_bilateral: 10
+  # ⚠️ 警告：根据基准测试结果，CRF 后处理显著降低了所有测试模型的性能
+  # - FCN: mIoU 从 0.726 降到 0.508 (-30%)
+  # - DeepLabV3: mIoU 从 0.738 降到 0.531 (-28%)
+  # - SegFormer: mIoU 从 0.619 降到 0.0026 (-99.6%，几乎完全失败)
+  # 
+  # 原因分析：
+  # 1. 现代深度模型已经足够好，CRF 的额外平滑反而破坏了预测
+  # 2. CRF 参数设置可能不当（iterations=20, bilateral_sxy=60 对于 256x256 图像过大）
+  # 3. 后处理 CRF 不如端到端训练的 CRF 有效（见 cnn_crf_* 模型）
+  # 4. SegFormer 等 Transformer 模型与 CRF 不兼容
+  #
+  # 建议：
+  # - 对于现代深度模型，不建议使用 CRF 后处理
+  # - 如需保留作为对比，建议使用更保守的参数（iterations=5, bilateral_sxy=30）
+  # - 或完全注释掉这些配置
+  #
+  # 详细分析见：reports/voc_benchmark/CRF_POSTPROCESSING_ANALYSIS.md
+  
+  # 已禁用：CRF 后处理导致性能下降
+  # - name: fcn_resnet50_crf_post
+  #   builder: crf_wrapper
+  #   params:
+  #     base_builder: fcn_resnet50
+  #     base_params:
+  #       pretrained: true
+  #       finetune_epochs: 0
+  #       learning_rate: 0.001
+  #       batch_size: 12
+  #       num_workers: 62
+  #     crf_params:
+  #       iterations: 5   # 保守参数：从 20 降到 5
+  #       gaussian_sxy: 3
+  #       bilateral_sxy: 30  # 保守参数：从 60 降到 30
+  #       bilateral_srgb: 13
+  #       compat_gaussian: 3
+  #       compat_bilateral: 10
+  
+  # 已禁用：CRF 后处理导致性能下降
+  # - name: deeplabv3_resnet50_crf_post
+  #   builder: crf_wrapper
+  #   params:
+  #     base_builder: deeplabv3_resnet50
+  #     base_params:
+  #       pretrained: true
+  #       finetune_epochs: 0
+  #       learning_rate: 0.001
+  #       batch_size: 12
+  #       num_workers: 62
+  #     crf_params:
+  #       iterations: 5   # 保守参数：从 20 降到 5
+  #       gaussian_sxy: 3
+  #       bilateral_sxy: 30  # 保守参数：从 60 降到 30
+  #       bilateral_srgb: 13
+  #       compat_gaussian: 3
+  #       compat_bilateral: 10
+  
+  # 已禁用：CRF 后处理导致性能严重下降（mIoU 从 0.619 降到 0.0026）
+  # SegFormer 等 Transformer 模型与 CRF 不兼容
+  # - name: segformer_b0_crf_post
+  #   builder: crf_wrapper
+  #   params:
+  #     base_builder: segformer_b0
+  #     base_params:
+  #       finetune_epochs: 0
+  #       learning_rate: 0.00005
+  #       batch_size: 12
+  #       num_workers: 62
+  #     crf_params:
+  #       iterations: 5   # 保守参数：从 20 降到 5
+  #       gaussian_sxy: 3
+  #       bilateral_sxy: 30  # 保守参数：从 60 降到 30
+  #       bilateral_srgb: 13
+  #       compat_gaussian: 3
+  #       compat_bilateral: 10
   # - name: hybrid_unet_transformer_crf_post
   #   builder: crf_wrapper
   #   params:

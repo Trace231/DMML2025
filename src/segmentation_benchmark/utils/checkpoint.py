@@ -41,6 +41,7 @@ def get_checkpoint_path(
     builder: str,
     config: Dict[str, Any],
     create_dir: bool = True,
+    epoch: Optional[int] = None,
 ) -> Path:
     """Get the checkpoint path for a given builder and configuration.
     
@@ -48,13 +49,17 @@ def get_checkpoint_path(
         builder: The model builder name (e.g., 'fcn_resnet50')
         config: The model configuration dictionary
         create_dir: Whether to create the checkpoint directory if it doesn't exist
+        epoch: Optional epoch number to include in filename (e.g., epoch_10, epoch_20)
         
     Returns:
         Path to the checkpoint file
     """
     checkpoint_dir = get_checkpoint_dir()
     config_hash = _compute_config_hash(config)
-    checkpoint_path = checkpoint_dir / f"{builder}_{config_hash}.pth"
+    if epoch is not None:
+        checkpoint_path = checkpoint_dir / f"{builder}_{config_hash}_epoch_{epoch}.pth"
+    else:
+        checkpoint_path = checkpoint_dir / f"{builder}_{config_hash}.pth"
     
     if create_dir:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
