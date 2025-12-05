@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import autocast, GradScaler
 
 from ..evaluation.registry import register_segmenter
 from ..utils.checkpoint import load_checkpoint, save_checkpoint

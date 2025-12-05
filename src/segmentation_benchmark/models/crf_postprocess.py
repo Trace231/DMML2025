@@ -20,12 +20,35 @@ from .base import BaseSegmenter
 
 @dataclass
 class CrfParams:
-    iterations: int = 5
+    """CRF post-processing parameters.
+    
+    Default values are conservative to avoid over-optimization that can degrade
+    performance of well-trained deep models. For 256x256 images, smaller values
+    are recommended.
+    """
+    iterations: int = 5  # Reduced from 20 to avoid over-optimization
     gaussian_sxy: int = 3
-    bilateral_sxy: int = 50
+    bilateral_sxy: int = 30  # Reduced from 50-60 for 256x256 images
     bilateral_srgb: int = 13
     compat_gaussian: int = 3
     compat_bilateral: int = 10
+    
+    def __post_init__(self):
+        """Validate parameters and warn about potentially problematic values."""
+        if self.iterations > 10:
+            import warnings
+            warnings.warn(
+                f"CRF iterations={self.iterations} may be too high and could "
+                f"degrade performance. Consider using 5-10 iterations.",
+                UserWarning
+            )
+        if self.bilateral_sxy > 50:
+            import warnings
+            warnings.warn(
+                f"CRF bilateral_sxy={self.bilateral_sxy} may be too large for "
+                f"256x256 images. Consider using 20-40.",
+                UserWarning
+            )
 
 
 class CrfPostProcessor:
@@ -67,7 +90,8 @@ class CrfPostProcessor:
             image = (image * 255.0).astype(np.uint8)
         else:
             image = image.astype(np.uint8)
-        return image
+        # Ensure C-contiguous array for pydensecrf
+        return np.ascontiguousarray(image)
 
     def _ensure_probabilities(self, logits: Any) -> np.ndarray:
         import torch
@@ -83,7 +107,8 @@ class CrfPostProcessor:
         logits -= logits.max(axis=0, keepdims=True)
         exp = np.exp(logits)
         probabilities = exp / (exp.sum(axis=0, keepdims=True) + 1e-10)
-        return probabilities.astype(np.float32)
+        # Ensure C-contiguous array for pydensecrf
+        return np.ascontiguousarray(probabilities.astype(np.float32))
 
 
 @register_segmenter("crf_wrapper")
@@ -98,8 +123,11 @@ class CrfWrappedSegmenter(BaseSegmenter):
         crf_params: Optional[Dict[str, Any]] = None,
         name: Optional[str] = None,
         use_trained_base: bool = True,
+        use_soft_onehot: bool = True,
+        enable_crf: bool = True,
     ) -> None:
-        super().__init__(num_classes=num_classes, name=name or f"{base_builder}-CRFPost")
+        suffix = "CRFPost" if enable_crf else "NoCRF"
+        super().__init__(num_classes=num_classes, name=name or f"{base_builder}-{suffix}")
         base_params = dict(base_params or {})
         base_params.setdefault("num_classes", num_classes)
         base_params.setdefault("device", str(self.device))
@@ -128,20 +156,60 @@ class CrfWrappedSegmenter(BaseSegmenter):
                 print(f"[INFO] {self.name}: No trained checkpoint found for base model, using pretrained weights")
         
         self.base = build_segmenter(base_builder, **base_params)
-        params = CrfParams(**crf_params) if isinstance(crf_params, dict) else crf_params
-        self.post = CrfPostProcessor(num_classes=num_classes, params=params)
+        self.enable_crf = enable_crf
+        self.use_soft_onehot = use_soft_onehot
+        
+        if enable_crf:
+            params = CrfParams(**crf_params) if isinstance(crf_params, dict) else crf_params
+            self.post = CrfPostProcessor(num_classes=num_classes, params=params)
+        else:
+            self.post = None
 
     def prepare(self, train_dataset: Optional[Any] = None, val_dataset: Optional[Any] = None) -> None:
         self.base.prepare(train_dataset=train_dataset, val_dataset=val_dataset)
 
     def predict_logits(self, batch: Dict[str, Any]) -> Optional[np.ndarray]:
+        """Get logits from base model, with fallback to one-hot encoding.
+        
+        Prefers real logits (continuous scores) over hard predictions.
+        If only hard predictions are available, converts to one-hot with warning.
+        """
         logits = self.base.predict_logits(batch)
         if logits is None:
+            import warnings
+            warnings.warn(
+                f"{self.name}: Base model '{self.base.name}' does not provide logits. "
+                f"Using hard predictions converted to one-hot encoding. "
+                f"This may degrade CRF performance as uncertainty information is lost. "
+                f"Consider implementing predict_logits() in the base model.",
+                UserWarning
+            )
             preds = self.base.predict_batch(batch)
-            logits = self._one_hot(preds)
+            logits = self._one_hot(preds, use_soft_onehot=self.use_soft_onehot)
+        else:
+            # Verify logits are not already hard (all 0 or 1)
+            logits_np = np.asarray(logits)
+            if logits_np.ndim == 4:
+                logits_np = logits_np[0]
+            # Check if logits are already probabilities (in [0, 1] range)
+            if logits_np.min() >= 0 and logits_np.max() <= 1:
+                # Check if they're hard (mostly 0 or 1)
+                unique_vals = np.unique(logits_np)
+                if len(unique_vals) <= 2 and all(v in [0.0, 1.0] for v in unique_vals):
+                    import warnings
+                    warnings.warn(
+                        f"{self.name}: Logits appear to be hard one-hot (only 0 and 1). "
+                        f"CRF may not work well. Ensure base model returns continuous logits.",
+                        UserWarning
+                    )
         return logits
 
     def predict_batch(self, batch: Dict[str, Any]) -> np.ndarray:
+        """Predict with optional CRF post-processing."""
+        if not self.enable_crf:
+            # If CRF is disabled, just return base model predictions
+            return self.base.predict_batch(batch)
+        
         logits = self.predict_logits(batch)
         image = batch["image"]
         if logits.ndim == 4:
@@ -150,11 +218,38 @@ class CrfWrappedSegmenter(BaseSegmenter):
             refined = [self.post.refine(image, logits)]
         return np.stack(refined, axis=0)
 
-    def _one_hot(self, preds: np.ndarray) -> np.ndarray:
+    def _one_hot(self, preds: np.ndarray, use_soft_onehot: bool = False) -> np.ndarray:
+        """Convert hard predictions to logits format.
+        
+        Args:
+            preds: Hard predictions with shape (batch, height, width)
+            use_soft_onehot: If True, use soft one-hot (0.9 for predicted class, 0.1 for others)
+                            instead of hard one-hot (1.0 for predicted class, 0.0 for others).
+                            This preserves some uncertainty information.
+        
+        Returns:
+            Logits with shape (batch, num_classes, height, width)
+        """
         preds = preds.astype(np.int64)
         batch, height, width = preds.shape
-        eye = np.eye(self.num_classes, dtype=np.float32)
-        logits = np.zeros((batch, self.num_classes, height, width), dtype=np.float32)
-        for b in range(batch):
-            logits[b] = eye[preds[b]].transpose(2, 0, 1)
+        
+        if use_soft_onehot:
+            # Soft one-hot: 0.9 for predicted class, 0.1/(num_classes-1) for others
+            # This preserves some uncertainty information for CRF
+            logits = np.full(
+                (batch, self.num_classes, height, width),
+                0.1 / (self.num_classes - 1) if self.num_classes > 1 else 0.0,
+                dtype=np.float32
+            )
+            for b in range(batch):
+                for c in range(self.num_classes):
+                    mask = (preds[b] == c)
+                    logits[b, c, mask] = 0.9
+        else:
+            # Hard one-hot: 1.0 for predicted class, 0.0 for others
+            eye = np.eye(self.num_classes, dtype=np.float32)
+            logits = np.zeros((batch, self.num_classes, height, width), dtype=np.float32)
+            for b in range(batch):
+                logits[b] = eye[preds[b]].transpose(2, 0, 1)
+        
         return logits

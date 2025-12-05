@@ -57,29 +57,29 @@ models:
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
   
-  # ========== 扩散模型 ==========
-  - name: ddp
-    builder: ddp
-    params:
-      finetune_epochs: 100
-      learning_rate: 0.0001
-      weight_decay: 1e-4
-      batch_size: 8  # Smaller batch size for diffusion model
-      num_workers: 14
-      num_timesteps: 1000  # Training timesteps
-      inference_steps: 50  # Inference timesteps (fewer for speed)
-      base_channels: 64
+  # # ========== 扩散模型 ==========
+  # - name: ddp
+  #   builder: ddp
+  #   params:
+  #     finetune_epochs: 100
+  #     learning_rate: 0.0001
+  #     weight_decay: 1e-4
+  #     batch_size: 8  # Smaller batch size for diffusion model
+  #     num_workers: 14
+  #     num_timesteps: 1000  # Training timesteps
+  #     inference_steps: 50  # Inference timesteps (fewer for speed)
+  #     base_channels: 64
   
-  # ========== 混合 CNN-Transformer 模型 ==========
-  - name: hybrid_unet_transformer
-    builder: hybrid_unet_transformer
-    params:
-      base_channels: 32
-      finetune_epochs: 100
-      learning_rate: 0.001
-      weight_decay: 1e-4
-      batch_size: 12
-      num_workers: 14
+  # # ========== 混合 CNN-Transformer 模型 ==========
+  # - name: hybrid_unet_transformer
+  #   builder: hybrid_unet_transformer
+  #   params:
+  #     base_channels: 32
+  #     finetune_epochs: 100
+  #     learning_rate: 0.001
+  #     weight_decay: 1e-4
+  #     batch_size: 12
+  #     num_workers: 14
   
   # ========== CNN-CRF 端到端模型 ==========
   - name: cnn_crf_fcn
@@ -94,9 +94,9 @@ models:
         batch_size: 12
         num_workers: 14
         crf_params:
-          iterations: 20  # 增加到10次迭代，提高CRF优化效果
+          iterations: 5  # 保守设置：减少迭代次数，避免过度优化
           gaussian_sxy: 3
-          bilateral_sxy: 60  # 调整为60，更适合256x256图像
+          bilateral_sxy: 30  # 保守设置：减小空间参数，适合256x256图像
           bilateral_srgb: 13
           compat_gaussian: 3
           compat_bilateral: 10
@@ -113,9 +113,9 @@ models:
         batch_size: 12
         num_workers: 14
         crf_params:
-          iterations: 20  # 增加到10次迭代，提高CRF优化效果
+          iterations: 5  # 保守设置：减少迭代次数，避免过度优化
           gaussian_sxy: 3
-          bilateral_sxy: 60  # 调整为60，更适合256x256图像
+          bilateral_sxy: 30  # 保守设置：减小空间参数，适合256x256图像
           bilateral_srgb: 13
           compat_gaussian: 3
           compat_bilateral: 10
@@ -173,42 +173,42 @@ models:
         bilateral_srgb: 13
         compat_gaussian: 3
         compat_bilateral: 10
-  - name: hybrid_unet_transformer_crf_post
-    builder: crf_wrapper
-    params:
-      base_builder: hybrid_unet_transformer
-      base_params:
-        base_channels: 32
-        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用
-        learning_rate: 0.001
-        weight_decay: 1e-4
-        batch_size: 12
-        num_workers: 14
-      crf_params:
-        iterations: 20  # 增加到10次迭代，提高CRF优化效果
-        gaussian_sxy: 3
-        bilateral_sxy: 60  # 调整为60，更适合256x256图像
-        bilateral_srgb: 13
-        compat_gaussian: 3
-        compat_bilateral: 10
-  - name: ddp_crf_post
-    builder: crf_wrapper
-    params:
-      base_builder: ddp
-      base_params:
-        finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用
-        learning_rate: 0.0001
-        weight_decay: 1e-4
-        batch_size: 8
-        num_workers: 14
-        num_timesteps: 1000
-        inference_steps: 50
-        base_channels: 64
-      crf_params:
-        iterations: 20  # 增加到10次迭代，提高CRF优化效果
-        gaussian_sxy: 3
-        bilateral_sxy: 60  # 调整为60，更适合256x256图像
-        bilateral_srgb: 13
-        compat_gaussian: 3
-        compat_bilateral: 10
+  # - name: hybrid_unet_transformer_crf_post
+  #   builder: crf_wrapper
+  #   params:
+  #     base_builder: hybrid_unet_transformer
+  #     base_params:
+  #       base_channels: 32
+  #       finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用
+  #       learning_rate: 0.001
+  #       weight_decay: 1e-4
+  #       batch_size: 12
+  #       num_workers: 14
+  #     crf_params:
+  #       iterations: 20  # 增加到10次迭代，提高CRF优化效果
+  #       gaussian_sxy: 3
+  #       bilateral_sxy: 60  # 调整为60，更适合256x256图像
+  #       bilateral_srgb: 13
+  #       compat_gaussian: 3
+  #       compat_bilateral: 10
+  # - name: ddp_crf_post
+  #   builder: crf_wrapper
+  #   params:
+  #     base_builder: ddp
+  #     base_params:
+  #       finetune_epochs: 0  # 如果找到训练好的checkpoint会自动使用
+  #       learning_rate: 0.0001
+  #       weight_decay: 1e-4
+  #       batch_size: 8
+  #       num_workers: 14
+  #       num_timesteps: 1000
+  #       inference_steps: 50
+  #       base_channels: 64
+  #     crf_params:
+  #       iterations: 20  # 增加到10次迭代，提高CRF优化效果
+  #       gaussian_sxy: 3
+  #       bilateral_sxy: 60  # 调整为60，更适合256x256图像
+  #       bilateral_srgb: 13
+  #       compat_gaussian: 3
+  #       compat_bilateral: 10
 
