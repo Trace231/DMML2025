@@ -78,18 +78,62 @@ class CrfPostProcessor:
 
     @staticmethod
     def _ensure_image(image: Any) -> np.ndarray:
+        """Convert image to uint8 RGB format for CRF.
+        
+        Handles:
+        - ImageNet-normalized tensors (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        - Normalized tensors in [0, 1] range
+        - Already denormalized images in [0, 255] range
+        """
         import torch
 
         if isinstance(image, torch.Tensor):
             image = image.detach().cpu().numpy()
             if image.ndim == 4:
-                image = image[0]
-            image = np.transpose(image, (1, 2, 0))
-        image = np.asarray(image)
-        if image.max() <= 1.0:
+                image = image[0]  # Take first image from batch
+            # Convert from (C, H, W) to (H, W, C)
+            if image.ndim == 3 and image.shape[0] == 3:
+                image = np.transpose(image, (1, 2, 0))
+        
+        image = np.asarray(image, dtype=np.float32)
+        
+        # Check if image is ImageNet-normalized
+        # ImageNet normalization: (x/255 - mean) / std
+        # Normalized values are typically in [-2.5, 2.5] range
+        # If we see negative values or values > 1.5, likely normalized
+        img_min, img_max = image.min(), image.max()
+        is_imagenet_normalized = img_min < -0.5 or (img_min < 0 and img_max > 1.5)
+        
+        if is_imagenet_normalized:
+            # Denormalize: reverse ImageNet normalization
+            # Original: normalized = (x/255 - mean) / std
+            # Reverse: x/255 = normalized * std + mean, so x = (normalized * std + mean) * 255
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            
+            # Ensure image is (H, W, C) format
+            if image.ndim == 3:
+                if image.shape[0] == 3 and image.shape[2] != 3:
+                    # Channels first, transpose
+                    image = np.transpose(image, (1, 2, 0))
+                
+                # Apply denormalization per channel
+                if image.shape[-1] == 3:
+                    image = image * std + mean
+                else:
+                    # Single channel or unexpected format
+                    image = image * std[0] + mean[0]
+            
+            # Clip to [0, 1] and convert to [0, 255]
+            image = np.clip(image, 0.0, 1.0)
+            image = (image * 255.0).astype(np.uint8)
+        elif img_max <= 1.0:
+            # Already in [0, 1] range, scale to [0, 255]
             image = (image * 255.0).astype(np.uint8)
         else:
-            image = image.astype(np.uint8)
+            # Already in [0, 255] range or higher, clip and convert
+            image = np.clip(image, 0, 255).astype(np.uint8)
+        
         # Ensure C-contiguous array for pydensecrf
         return np.ascontiguousarray(image)
 

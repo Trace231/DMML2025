@@ -72,26 +72,46 @@ def save_checkpoint(
     builder: str,
     config: Dict[str, Any],
     metadata: Optional[Dict[str, Any]] = None,
+    epoch: Optional[int] = None,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler: Optional[Any] = None,
+    scaler: Optional[Any] = None,
 ) -> Path:
-    """Save a model checkpoint with configuration metadata.
+    """Save a model checkpoint with configuration metadata and training state.
     
     Args:
         model: The PyTorch model to save
         builder: The model builder name
         config: The model configuration dictionary
         metadata: Optional additional metadata to save (e.g., training metrics)
+        epoch: Optional epoch number to include in filename and metadata
+        optimizer: Optional optimizer state to save (for resume training)
+        scheduler: Optional scheduler state to save (for resume training)
+        scaler: Optional gradient scaler state to save (for resume training with AMP)
         
     Returns:
         Path to the saved checkpoint file
     """
-    checkpoint_path = get_checkpoint_path(builder, config, create_dir=True)
+    checkpoint_path = get_checkpoint_path(builder, config, create_dir=True, epoch=epoch)
+    
+    metadata = metadata or {}
+    if epoch is not None:
+        metadata["epoch"] = epoch
     
     checkpoint = {
         "model_state_dict": model.state_dict(),
         "builder": builder,
         "config": config,
-        "metadata": metadata or {},
+        "metadata": metadata,
     }
+    
+    # Save training state for resume
+    if optimizer is not None:
+        checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+    if scheduler is not None:
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+    if scaler is not None:
+        checkpoint["scaler_state_dict"] = scaler.state_dict()
     
     torch.save(checkpoint, checkpoint_path)
     return checkpoint_path
@@ -102,6 +122,9 @@ def load_checkpoint(
     config: Dict[str, Any],
     model: Optional[torch.nn.Module] = None,
     device: Optional[torch.device] = None,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler: Optional[Any] = None,
+    scaler: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load a checkpoint matching the given builder and configuration.
     
@@ -110,6 +133,9 @@ def load_checkpoint(
         config: The model configuration dictionary
         model: Optional model to load weights into. If None, only returns the checkpoint dict.
         device: Device to load the checkpoint to (default: CPU)
+        optimizer: Optional optimizer to load state into (for resume training)
+        scheduler: Optional scheduler to load state into (for resume training)
+        scaler: Optional gradient scaler to load state into (for resume training with AMP)
         
     Returns:
         The checkpoint dictionary if found, None otherwise
@@ -126,6 +152,14 @@ def load_checkpoint(
     
     if model is not None:
         model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    
+    # Load training state for resume
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scheduler is not None and "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    if scaler is not None and "scaler_state_dict" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
     
     return checkpoint
 
@@ -185,6 +219,88 @@ def list_checkpoints(builder: Optional[str] = None) -> list[Path]:
     
     pattern = f"{builder}_*.pth" if builder else "*.pth"
     return sorted(checkpoint_dir.glob(pattern))
+
+
+def list_epoch_checkpoints(
+    builder: str,
+    config: Dict[str, Any],
+) -> list[tuple[int, Path]]:
+    """List all epoch checkpoints for a given builder and configuration.
+    
+    Args:
+        builder: The model builder name
+        config: The model configuration dictionary
+        
+    Returns:
+        List of (epoch, path) tuples, sorted by epoch
+    """
+    checkpoint_dir = get_checkpoint_dir()
+    if not checkpoint_dir.exists():
+        return []
+    
+    config_hash = _compute_config_hash(config)
+    pattern = f"{builder}_{config_hash}_epoch_*.pth"
+    
+    epoch_checkpoints = []
+    for checkpoint_path in checkpoint_dir.glob(pattern):
+        # Extract epoch number from filename: {builder}_{hash}_epoch_{epoch}.pth
+        try:
+            epoch_str = checkpoint_path.stem.split("_epoch_")[-1]
+            epoch = int(epoch_str)
+            epoch_checkpoints.append((epoch, checkpoint_path))
+        except (ValueError, IndexError):
+            continue
+    
+    return sorted(epoch_checkpoints, key=lambda x: x[0])
+
+
+def load_epoch_checkpoint(
+    builder: str,
+    config: Dict[str, Any],
+    epoch: int,
+    model: Optional[torch.nn.Module] = None,
+    device: Optional[torch.device] = None,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler: Optional[Any] = None,
+    scaler: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Load a checkpoint for a specific epoch.
+    
+    Args:
+        builder: The model builder name
+        config: The model configuration dictionary
+        epoch: The epoch number to load
+        model: Optional model to load weights into
+        device: Device to load the checkpoint to (default: CPU)
+        optimizer: Optional optimizer to load state into (for resume training)
+        scheduler: Optional scheduler to load state into (for resume training)
+        scaler: Optional gradient scaler to load state into (for resume training with AMP)
+        
+    Returns:
+        The checkpoint dictionary if found, None otherwise
+    """
+    checkpoint_path = get_checkpoint_path(builder, config, create_dir=False, epoch=epoch)
+    
+    if not checkpoint_path.exists():
+        return None
+    
+    if device is None:
+        device = torch.device("cpu")
+    
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    if model is not None:
+        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    
+    # Load training state for resume
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scheduler is not None and "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    if scaler is not None and "scaler_state_dict" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+    
+    return checkpoint
 
 
 def get_config_from_checkpoint(checkpoint_path: Path) -> Optional[Dict[str, Any]]:

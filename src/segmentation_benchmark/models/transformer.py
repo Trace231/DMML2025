@@ -140,6 +140,9 @@ class SegformerSegmenter(BaseSegmenter):
         )
         optimizer = AdamW(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         self.model.train()
+        config = self._get_config()
+        checkpoint_interval = 10  # Save checkpoint every 10 epochs
+        
         for epoch in range(self.finetune_epochs):
             epoch_loss = 0.0
             batch_count = 0
@@ -178,18 +181,30 @@ class SegformerSegmenter(BaseSegmenter):
                 batch_count += 1
             
             avg_loss = epoch_loss / max(batch_count, 1)
-            print(f"[TRAIN] {self.name} epoch {epoch+1}/{self.finetune_epochs} - avg loss: {avg_loss:.4f}")
+            current_epoch = epoch + 1
+            print(f"[TRAIN] {self.name} epoch {current_epoch}/{self.finetune_epochs} - avg loss: {avg_loss:.4f}")
+            
+            # Save checkpoint every checkpoint_interval epochs
+            if current_epoch % checkpoint_interval == 0:
+                checkpoint_path = save_checkpoint(
+                    self.model,
+                    "segformer_b0",
+                    config,
+                    metadata={"loss": avg_loss, "epoch": current_epoch, "total_epochs": self.finetune_epochs},
+                    epoch=current_epoch
+                )
+                print(f"[INFO] {self.name}: Saved checkpoint at epoch {current_epoch} to {checkpoint_path}")
+        
         self.model.eval()
         
-        # Save checkpoint after training
-        config = self._get_config()
+        # Save final checkpoint after training
         checkpoint_path = save_checkpoint(
             self.model,
             "segformer_b0",
             config,
             metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs}
         )
-        print(f"[INFO] {self.name}: Saved checkpoint to {checkpoint_path}")
+        print(f"[INFO] {self.name}: Saved final checkpoint to {checkpoint_path}")
 
     def _prepare_images(self, tensor: torch.Tensor) -> List[np.ndarray]:
         """Convert normalized tensor back to RGB images in [0, 255] range.

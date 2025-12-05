@@ -61,6 +61,7 @@ class TorchvisionSegmenter(BaseSegmenter):
         batch_size: int = 2,
         num_workers: int = 0,
         device: Optional[str] = None,
+        resume_epoch: Optional[int] = None,
     ) -> None:
         super().__init__(num_classes=num_classes, device=device, name=f"Torchvision-{model_name}")
         if not hasattr(tv_seg, model_name):
@@ -74,6 +75,7 @@ class TorchvisionSegmenter(BaseSegmenter):
         self.num_workers = int(num_workers)
         self.model_name = model_name
         self.pretrained = pretrained
+        self.resume_epoch = int(resume_epoch) if resume_epoch is not None else None
         
         # Use our central pretrained cache instead of letting torchvision download
         self.model = build_torchvision_segmentation_model(model_name, pretrained=pretrained)
@@ -82,7 +84,8 @@ class TorchvisionSegmenter(BaseSegmenter):
         
         # Try to load checkpoint if available (only if finetune_epochs > 0, meaning we expect trained weights)
         # Load checkpoint BEFORE compilation, as compiled models may have issues loading state_dict
-        if finetune_epochs > 0:
+        # If resume_epoch is specified, we'll load it during training
+        if finetune_epochs > 0 and self.resume_epoch is None:
             config = self._get_config()
             checkpoint = load_checkpoint(self.model_name, config, model=self.model, device=self.device)
             if checkpoint is not None:
@@ -168,8 +171,31 @@ class TorchvisionSegmenter(BaseSegmenter):
         if use_amp:
             print(f"[INFO] {self.name}: Mixed precision training (AMP) enabled")
         
+        # Check if we should resume from a checkpoint
+        start_epoch = 0
+        if self.resume_epoch is not None:
+            from ..utils.checkpoint import load_epoch_checkpoint
+            # Load checkpoint with training state
+            checkpoint = load_epoch_checkpoint(
+                self.model_name, config, self.resume_epoch, 
+                model=self.model, device=self.device,
+                optimizer=optimizer, scheduler=scheduler, scaler=scaler
+            )
+            if checkpoint is not None:
+                start_epoch = self.resume_epoch
+                print(f"[INFO] {self.name}: Resuming training from epoch {start_epoch}")
+                # Adjust scheduler to continue from the correct step
+                # Scheduler needs to be stepped to match the resumed epoch
+                for _ in range(start_epoch):
+                    scheduler.step()
+            else:
+                print(f"[WARNING] {self.name}: Resume epoch {self.resume_epoch} checkpoint not found, starting from epoch 0")
+        
         self.model.train()
-        for epoch in range(self.finetune_epochs):
+        config = self._get_config()
+        checkpoint_interval = 10  # Save checkpoint every 10 epochs
+        
+        for epoch in range(start_epoch, self.finetune_epochs):
             epoch_loss = 0.0
             batch_count = 0
             for batch in loader:
@@ -216,19 +242,31 @@ class TorchvisionSegmenter(BaseSegmenter):
             current_lr_head = optimizer.param_groups[1]['lr']
             
             avg_loss = epoch_loss / max(batch_count, 1)
-            print(f"[TRAIN] {self.name} epoch {epoch+1}/{self.finetune_epochs} - avg loss: {avg_loss:.4f} "
+            current_epoch = epoch + 1
+            print(f"[TRAIN] {self.name} epoch {current_epoch}/{self.finetune_epochs} - avg loss: {avg_loss:.4f} "
                   f"(LR: backbone={current_lr_backbone:.6f}, head={current_lr_head:.6f})")
+            
+            # Save checkpoint every checkpoint_interval epochs
+            if current_epoch % checkpoint_interval == 0:
+                checkpoint_path = save_checkpoint(
+                    self.model,
+                    self.model_name,
+                    config,
+                    metadata={"loss": avg_loss, "epoch": current_epoch, "total_epochs": self.finetune_epochs},
+                    epoch=current_epoch
+                )
+                print(f"[INFO] {self.name}: Saved checkpoint at epoch {current_epoch} to {checkpoint_path}")
+        
         self.model.eval()
         
-        # Save checkpoint after training
-        config = self._get_config()
+        # Save final checkpoint after training
         checkpoint_path = save_checkpoint(
             self.model,
             self.model_name,
             config,
             metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs}
         )
-        print(f"[INFO] {self.name}: Saved checkpoint to {checkpoint_path}")
+        print(f"[INFO] {self.name}: Saved final checkpoint to {checkpoint_path}")
 
     def predict_logits(self, batch: Dict[str, Any]) -> Optional[np.ndarray]:
         self.model.eval()
