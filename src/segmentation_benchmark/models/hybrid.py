@@ -106,6 +106,7 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
         batch_size: int = 4,
         num_workers: int = 0,
         device: Optional[str] = None,
+        resume_epoch: Optional[int] = None,
     ) -> None:
         super().__init__(num_classes=num_classes, device=device, name="HybridUNetTransformer")
         # Ensure numeric parameters are correct types (YAML may parse as strings)
@@ -117,9 +118,11 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
         self.batch_size = int(batch_size)
         self.num_workers = int(num_workers)
         self.base_channels = base_channels
+        self.resume_epoch = int(resume_epoch) if resume_epoch is not None else None
         
         # Try to load checkpoint if available (only if finetune_epochs > 0, meaning we expect trained weights)
-        if finetune_epochs > 0:
+        # If resume_epoch is specified, we'll load it during training
+        if finetune_epochs > 0 and self.resume_epoch is None:
             config = self._get_config()
             checkpoint = load_checkpoint("hybrid_unet_transformer", config, model=self.model, device=self.device)
             if checkpoint is not None:
@@ -237,11 +240,41 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
         if use_amp:
             print(f"[INFO] {self.name}: Mixed precision training (AMP) enabled")
 
-        self.model.train()
+        # Get config for checkpoint operations
         config = self._get_config()
+        
+        # Check if we should resume from a checkpoint
+        start_epoch = 0
+        from ..utils.checkpoint import load_epoch_checkpoint, load_latest_epoch_checkpoint
+        
+        if self.resume_epoch is not None:
+            # Manual resume: load specific epoch
+            checkpoint = load_epoch_checkpoint(
+                "hybrid_unet_transformer", config, self.resume_epoch, 
+                model=self.model, device=self.device,
+                optimizer=optimizer, scheduler=scheduler, scaler=scaler
+            )
+            if checkpoint is not None:
+                start_epoch = self.resume_epoch
+                print(f"[INFO] {self.name}: Resuming training from epoch {start_epoch} (manual)")
+            else:
+                print(f"[WARNING] {self.name}: Resume epoch {self.resume_epoch} checkpoint not found, starting from epoch 0")
+        else:
+            # Auto resume: find and load latest checkpoint
+            result = load_latest_epoch_checkpoint(
+                "hybrid_unet_transformer", config,
+                model=self.model, device=self.device,
+                optimizer=optimizer, scheduler=scheduler, scaler=scaler
+            )
+            if result is not None:
+                latest_epoch, checkpoint = result
+                start_epoch = latest_epoch
+                print(f"[INFO] {self.name}: Auto-resuming training from latest checkpoint (epoch {start_epoch})")
+
+        self.model.train()
         checkpoint_interval = 10  # Save checkpoint every 10 epochs
         
-        for epoch in range(self.finetune_epochs):
+        for epoch in range(start_epoch, self.finetune_epochs):
             epoch_loss = 0.0
             batch_count = 0
             for batch in loader:
@@ -286,7 +319,10 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
                     "hybrid_unet_transformer",
                     config,
                     metadata={"loss": avg_loss, "epoch": current_epoch, "total_epochs": self.finetune_epochs},
-                    epoch=current_epoch
+                    epoch=current_epoch,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler if use_amp else None,
                 )
                 print(f"[INFO] {self.name}: Saved checkpoint at epoch {current_epoch} to {checkpoint_path}")
 
@@ -297,7 +333,10 @@ class HybridUNetTransformerSegmenter(BaseSegmenter):
             self.model,
             "hybrid_unet_transformer",
             config,
-            metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs}
+            metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs},
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler if use_amp else None,
         )
         print(f"[INFO] {self.name}: Saved final checkpoint to {checkpoint_path}")
 

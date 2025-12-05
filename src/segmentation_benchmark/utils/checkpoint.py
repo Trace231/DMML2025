@@ -318,3 +318,70 @@ def get_config_from_checkpoint(checkpoint_path: Path) -> Optional[Dict[str, Any]
     except Exception:
         return None
 
+
+def find_latest_epoch_checkpoint(
+    builder: str,
+    config: Dict[str, Any],
+) -> Optional[tuple[int, Path]]:
+    """Find the latest epoch checkpoint for a given builder and configuration.
+    
+    Args:
+        builder: The model builder name
+        config: The model configuration dictionary
+        
+    Returns:
+        Tuple of (epoch, path) for the latest checkpoint if found, None otherwise
+    """
+    epoch_checkpoints = list_epoch_checkpoints(builder, config)
+    if epoch_checkpoints:
+        return epoch_checkpoints[-1]  # Return the latest (highest epoch)
+    return None
+
+
+def load_latest_epoch_checkpoint(
+    builder: str,
+    config: Dict[str, Any],
+    model: Optional[torch.nn.Module] = None,
+    device: Optional[torch.device] = None,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler: Optional[Any] = None,
+    scaler: Optional[Any] = None,
+) -> Optional[tuple[int, Dict[str, Any]]]:
+    """Load the latest epoch checkpoint for a given builder and configuration.
+    
+    Args:
+        builder: The model builder name
+        config: The model configuration dictionary
+        model: Optional model to load weights into
+        device: Device to load the checkpoint to (default: CPU)
+        optimizer: Optional optimizer to load state into (for resume training)
+        scheduler: Optional scheduler to load state into (for resume training)
+        scaler: Optional gradient scaler to load state into (for resume training with AMP)
+        
+    Returns:
+        Tuple of (epoch, checkpoint_dict) if found, None otherwise
+    """
+    latest = find_latest_epoch_checkpoint(builder, config)
+    if latest is None:
+        return None
+    
+    epoch, checkpoint_path = latest
+    
+    if device is None:
+        device = torch.device("cpu")
+    
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    if model is not None:
+        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    
+    # Load training state for resume
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scheduler is not None and "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    if scaler is not None and "scaler_state_dict" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+    
+    return (epoch, checkpoint)
+

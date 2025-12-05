@@ -32,6 +32,8 @@ models:
         bilateral_srgb: 13
   
   # ========== CNN 模型 ==========
+  # 注意：如果需要从某个epoch恢复训练，可以添加 resume_epoch 参数
+  # 例如：resume_epoch: 30  # 从第30个epoch继续训练
   - name: fcn_resnet50
     builder: fcn_resnet50
     params:
@@ -40,6 +42,7 @@ models:
       learning_rate: 0.001  # Increased for better convergence (head LR=0.001, backbone LR=0.0001)
       batch_size: 12  # Increased from 4 to 8 for better GPU utilization on V100
       num_workers: 14
+      # resume_epoch: 30  # 取消注释以从第30个epoch恢复训练
   - name: deeplabv3_resnet50
     builder: deeplabv3_resnet50
     params:

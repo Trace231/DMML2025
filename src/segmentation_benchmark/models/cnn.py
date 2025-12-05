@@ -171,11 +171,15 @@ class TorchvisionSegmenter(BaseSegmenter):
         if use_amp:
             print(f"[INFO] {self.name}: Mixed precision training (AMP) enabled")
         
+        # Get config for checkpoint operations
+        config = self._get_config()
+        
         # Check if we should resume from a checkpoint
         start_epoch = 0
+        from ..utils.checkpoint import load_epoch_checkpoint, load_latest_epoch_checkpoint
+        
         if self.resume_epoch is not None:
-            from ..utils.checkpoint import load_epoch_checkpoint
-            # Load checkpoint with training state
+            # Manual resume: load specific epoch
             checkpoint = load_epoch_checkpoint(
                 self.model_name, config, self.resume_epoch, 
                 model=self.model, device=self.device,
@@ -183,16 +187,22 @@ class TorchvisionSegmenter(BaseSegmenter):
             )
             if checkpoint is not None:
                 start_epoch = self.resume_epoch
-                print(f"[INFO] {self.name}: Resuming training from epoch {start_epoch}")
-                # Adjust scheduler to continue from the correct step
-                # Scheduler needs to be stepped to match the resumed epoch
-                for _ in range(start_epoch):
-                    scheduler.step()
+                print(f"[INFO] {self.name}: Resuming training from epoch {start_epoch} (manual)")
             else:
                 print(f"[WARNING] {self.name}: Resume epoch {self.resume_epoch} checkpoint not found, starting from epoch 0")
+        else:
+            # Auto resume: find and load latest checkpoint
+            result = load_latest_epoch_checkpoint(
+                self.model_name, config,
+                model=self.model, device=self.device,
+                optimizer=optimizer, scheduler=scheduler, scaler=scaler
+            )
+            if result is not None:
+                latest_epoch, checkpoint = result
+                start_epoch = latest_epoch
+                print(f"[INFO] {self.name}: Auto-resuming training from latest checkpoint (epoch {start_epoch})")
         
         self.model.train()
-        config = self._get_config()
         checkpoint_interval = 10  # Save checkpoint every 10 epochs
         
         for epoch in range(start_epoch, self.finetune_epochs):
@@ -253,7 +263,10 @@ class TorchvisionSegmenter(BaseSegmenter):
                     self.model_name,
                     config,
                     metadata={"loss": avg_loss, "epoch": current_epoch, "total_epochs": self.finetune_epochs},
-                    epoch=current_epoch
+                    epoch=current_epoch,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler if use_amp else None,
                 )
                 print(f"[INFO] {self.name}: Saved checkpoint at epoch {current_epoch} to {checkpoint_path}")
         
@@ -264,7 +277,10 @@ class TorchvisionSegmenter(BaseSegmenter):
             self.model,
             self.model_name,
             config,
-            metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs}
+            metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs},
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler if use_amp else None,
         )
         print(f"[INFO] {self.name}: Saved final checkpoint to {checkpoint_path}")
 

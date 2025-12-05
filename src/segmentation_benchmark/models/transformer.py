@@ -143,7 +143,20 @@ class SegformerSegmenter(BaseSegmenter):
         config = self._get_config()
         checkpoint_interval = 10  # Save checkpoint every 10 epochs
         
-        for epoch in range(self.finetune_epochs):
+        # Auto resume: find and load latest checkpoint
+        start_epoch = 0
+        from ..utils.checkpoint import load_latest_epoch_checkpoint
+        result = load_latest_epoch_checkpoint(
+            "segformer_b0", config,
+            model=self.model, device=self.device,
+            optimizer=optimizer, scheduler=None, scaler=None
+        )
+        if result is not None:
+            latest_epoch, checkpoint = result
+            start_epoch = latest_epoch
+            print(f"[INFO] {self.name}: Auto-resuming training from latest checkpoint (epoch {start_epoch})")
+        
+        for epoch in range(start_epoch, self.finetune_epochs):
             epoch_loss = 0.0
             batch_count = 0
             for batch in loader:
