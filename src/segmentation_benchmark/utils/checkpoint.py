@@ -264,12 +264,14 @@ def list_checkpoints(builder: Optional[str] = None) -> list[Path]:
 def list_epoch_checkpoints(
     builder: str,
     config: Dict[str, Any],
+    ignore_keys: Optional[list[str]] = None,
 ) -> list[tuple[int, Path]]:
     """List all epoch checkpoints for a given builder and configuration.
     
     Args:
         builder: The model builder name
         config: The model configuration dictionary
+        ignore_keys: Optional list of keys to ignore when matching (e.g., ['finetune_epochs'])
         
     Returns:
         List of (epoch, path) tuples, sorted by epoch
@@ -278,10 +280,18 @@ def list_epoch_checkpoints(
     if not checkpoint_dir.exists():
         return []
     
-    config_hash = _compute_config_hash(config)
-    pattern = f"{builder}_{config_hash}_epoch_*.pth"
+    # Default ignore keys: finetune_epochs should not affect epoch checkpoint matching
+    if ignore_keys is None:
+        ignore_keys = ["finetune_epochs"]
     
+    # Create filtered config for matching (excluding ignored keys)
+    filtered_config = {k: v for k, v in config.items() if k not in ignore_keys}
+    filtered_config_hash = _compute_config_hash(filtered_config)
+    
+    # Try exact match first
+    pattern = f"{builder}_{filtered_config_hash}_epoch_*.pth"
     epoch_checkpoints = []
+    
     for checkpoint_path in checkpoint_dir.glob(pattern):
         # Extract epoch number from filename: {builder}_{hash}_epoch_{epoch}.pth
         try:
@@ -290,6 +300,23 @@ def list_epoch_checkpoints(
             epoch_checkpoints.append((epoch, checkpoint_path))
         except (ValueError, IndexError):
             continue
+    
+    # If no exact match found, try to match by loading checkpoint configs
+    if not epoch_checkpoints:
+        # List all epoch checkpoints for this builder
+        all_pattern = f"{builder}_*_epoch_*.pth"
+        for checkpoint_path in checkpoint_dir.glob(all_pattern):
+            try:
+                # Load checkpoint and check if config matches (ignoring specified keys)
+                checkpoint_config = get_config_from_checkpoint(checkpoint_path)
+                if checkpoint_config:
+                    filtered_checkpoint_config = {k: v for k, v in checkpoint_config.items() if k not in ignore_keys}
+                    if filtered_checkpoint_config == filtered_config:
+                        epoch_str = checkpoint_path.stem.split("_epoch_")[-1]
+                        epoch = int(epoch_str)
+                        epoch_checkpoints.append((epoch, checkpoint_path))
+            except (ValueError, IndexError, Exception):
+                continue
     
     return sorted(epoch_checkpoints, key=lambda x: x[0])
 
