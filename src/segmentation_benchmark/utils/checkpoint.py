@@ -117,6 +117,46 @@ def save_checkpoint(
     return checkpoint_path
 
 
+def save_epoch_checkpoint(
+    model: torch.nn.Module,
+    builder: str,
+    config: Dict[str, Any],
+    epoch: int,
+    metadata: Optional[Dict[str, Any]] = None,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler: Optional[Any] = None,
+    scaler: Optional[Any] = None,
+) -> Path:
+    """Save a model checkpoint for a specific epoch.
+    
+    This is a convenience wrapper around save_checkpoint that requires epoch
+    as a positional parameter for clarity when saving epoch-specific checkpoints.
+    
+    Args:
+        model: The PyTorch model to save
+        builder: The model builder name
+        config: The model configuration dictionary
+        epoch: The epoch number (required)
+        metadata: Optional additional metadata to save (e.g., training metrics)
+        optimizer: Optional optimizer state to save (for resume training)
+        scheduler: Optional scheduler state to save (for resume training)
+        scaler: Optional gradient scaler state to save (for resume training with AMP)
+        
+    Returns:
+        Path to the saved checkpoint file
+    """
+    return save_checkpoint(
+        model=model,
+        builder=builder,
+        config=config,
+        metadata=metadata,
+        epoch=epoch,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        scaler=scaler,
+    )
+
+
 def load_checkpoint(
     builder: str,
     config: Dict[str, Any],
