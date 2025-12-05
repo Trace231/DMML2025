@@ -199,12 +199,14 @@ class SegformerSegmenter(BaseSegmenter):
             
             # Save checkpoint every checkpoint_interval epochs
             if current_epoch % checkpoint_interval == 0:
-                checkpoint_path = save_checkpoint(
+                from ..utils.checkpoint import save_epoch_checkpoint
+                checkpoint_path = save_epoch_checkpoint(
                     self.model,
                     "segformer_b0",
                     config,
+                    current_epoch,
                     metadata={"loss": avg_loss, "epoch": current_epoch, "total_epochs": self.finetune_epochs},
-                    epoch=current_epoch
+                    optimizer=optimizer, scheduler=None, scaler=None
                 )
                 print(f"[INFO] {self.name}: Saved checkpoint at epoch {current_epoch} to {checkpoint_path}")
         

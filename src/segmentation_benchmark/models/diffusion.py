@@ -328,8 +328,25 @@ class DDPSegmenter(BaseSegmenter):
         if use_amp:
             print(f"[INFO] {self.name}: Mixed precision training (AMP) enabled")
         
+        # Get config for checkpoint operations
+        config = self._get_config()
+        checkpoint_interval = 10  # Save checkpoint every 10 epochs
+        
+        # Auto resume: find and load latest checkpoint
+        start_epoch = 0
+        from ..utils.checkpoint import load_latest_epoch_checkpoint
+        result = load_latest_epoch_checkpoint(
+            "ddp", config,
+            model=self.model, device=self.device,
+            optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_amp else None
+        )
+        if result is not None:
+            latest_epoch, checkpoint = result
+            start_epoch = latest_epoch
+            print(f"[INFO] {self.name}: Auto-resuming training from latest checkpoint (epoch {start_epoch})")
+        
         self.model.train()
-        for epoch in range(self.finetune_epochs):
+        for epoch in range(start_epoch, self.finetune_epochs):
             epoch_loss = 0.0
             batch_count = 0
             
@@ -376,20 +393,35 @@ class DDPSegmenter(BaseSegmenter):
             
             scheduler.step()
             avg_loss = epoch_loss / max(batch_count, 1)
+            current_epoch = epoch + 1
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"[TRAIN] {self.name} epoch {epoch+1}/{self.finetune_epochs} - avg loss: {avg_loss:.4f} (LR: {current_lr:.6f})")
+            print(f"[TRAIN] {self.name} epoch {current_epoch}/{self.finetune_epochs} - avg loss: {avg_loss:.4f} (LR: {current_lr:.6f})")
+            
+            # Save checkpoint every checkpoint_interval epochs
+            if current_epoch % checkpoint_interval == 0:
+                from ..utils.checkpoint import save_epoch_checkpoint
+                checkpoint_path = save_epoch_checkpoint(
+                    self.model,
+                    "ddp",
+                    config,
+                    current_epoch,
+                    metadata={"loss": avg_loss, "epoch": current_epoch, "total_epochs": self.finetune_epochs},
+                    optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_amp else None
+                )
+                print(f"[INFO] {self.name}: Saved checkpoint at epoch {current_epoch} to {checkpoint_path}")
         
         self.model.eval()
         
-        # Save checkpoint
-        config = self._get_config()
+        # Save final checkpoint after training
+        from ..utils.checkpoint import save_checkpoint
         checkpoint_path = save_checkpoint(
             self.model,
             "ddp",
             config,
-            metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs}
+            metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs},
+            optimizer=optimizer, scheduler=scheduler, scaler=scaler if use_amp else None
         )
-        print(f"[INFO] {self.name}: Saved checkpoint to {checkpoint_path}")
+        print(f"[INFO] {self.name}: Saved final checkpoint to {checkpoint_path}")
     
     def predict_batch(self, batch: Dict[str, Any]) -> np.ndarray:
         """Predict segmentation masks using diffusion."""
