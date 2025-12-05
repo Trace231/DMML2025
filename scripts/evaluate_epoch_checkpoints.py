@@ -3,7 +3,7 @@
 This script finds all epoch checkpoints (saved every 10 epochs) and evaluates
 each one to track model performance during training.
 """
-
+#debug
 from __future__ import annotations
 
 import argparse
