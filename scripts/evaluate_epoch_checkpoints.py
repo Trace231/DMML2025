@@ -104,7 +104,7 @@ def create_visualizations(
         metrics_to_plot = [
             ("mean_iou", "Mean IoU", axes[0, 0]),
             ("mean_dice", "Mean Dice", axes[0, 1]),
-            ("overall_accuracy", "Overall Accuracy", axes[1, 0]),
+            ("pixel_accuracy", "Pixel Accuracy", axes[1, 0]),
             ("mean_precision", "Mean Precision", axes[1, 1]),
         ]
         
@@ -196,6 +196,85 @@ def create_visualizations(
             LOGGER.info("Saved CRF comparison plot to %s", comparison_path)
 
 
+def ensure_model_trained_to_epochs(
+    builder: str,
+    model_config: Dict[str, Any],
+    params: Dict[str, Any],
+    target_epochs: int,
+    checkpoint_interval: int,
+    train_dataset: Any,
+    val_dataset: Any,
+    device_override: str | None = None,
+) -> bool:
+    """Ensure a model is trained to target_epochs, saving checkpoints every checkpoint_interval epochs.
+    
+    Returns True if training was successful or model already has required checkpoints.
+    """
+    from segmentation_benchmark.utils.checkpoint import list_epoch_checkpoints
+    
+    # Check existing checkpoints
+    existing_checkpoints = list_epoch_checkpoints(builder, model_config)
+    existing_epochs = {epoch for epoch, _ in existing_checkpoints}
+    
+    # Check if we have all required checkpoints
+    required_epochs = set(range(checkpoint_interval, target_epochs + 1, checkpoint_interval))
+    missing_epochs = required_epochs - existing_epochs
+    
+    if not missing_epochs:
+        LOGGER.info("Model %s already has all required checkpoints up to epoch %d", builder, target_epochs)
+        return True
+    
+    # Find the latest existing epoch to resume from
+    latest_epoch = max(existing_epochs) if existing_epochs else 0
+    
+    LOGGER.info(
+        "Model %s missing checkpoints for epochs %s. Latest checkpoint: epoch %d. Training from epoch %d to %d...",
+        builder, sorted(missing_epochs), latest_epoch, latest_epoch + 1, target_epochs
+    )
+    
+    # Build segmenter with target_epochs
+    training_params = params.copy()
+    training_params["finetune_epochs"] = target_epochs
+    if device_override is not None:
+        training_params["device"] = device_override
+    
+    try:
+        segmenter = build_segmenter(builder, **training_params)
+        
+        # Set resume_epoch if we have existing checkpoints
+        # The training code will auto-resume from latest checkpoint if resume_epoch is None
+        # If we set resume_epoch, it will resume from that specific epoch
+        # Since checkpoint saves after completing an epoch, we should resume from latest_epoch
+        # The training loop will continue from there
+        if latest_epoch > 0 and hasattr(segmenter, "resume_epoch"):
+            # Don't set resume_epoch - let it auto-resume from latest checkpoint
+            # This ensures proper state restoration
+            pass
+        
+        # Train the model (this will save checkpoints every checkpoint_interval epochs)
+        LOGGER.info("Training %s to epoch %d...", builder, target_epochs)
+        segmenter.prepare(train_dataset=train_dataset, val_dataset=val_dataset)
+        
+        # Verify checkpoints were created
+        new_checkpoints = list_epoch_checkpoints(builder, model_config)
+        new_epochs = {epoch for epoch, _ in new_checkpoints}
+        still_missing = required_epochs - new_epochs
+        
+        if still_missing:
+            LOGGER.warning(
+                "After training, model %s still missing checkpoints for epochs %s",
+                builder, sorted(still_missing)
+            )
+            return False
+        
+        LOGGER.info("Successfully trained %s to epoch %d with all required checkpoints", builder, target_epochs)
+        return True
+        
+    except Exception as e:
+        LOGGER.error("Error training %s: %s", builder, e, exc_info=True)
+        return False
+
+
 def evaluate_epoch_checkpoints(
     config: Dict[str, Any],
     output_dir: Path,
@@ -204,8 +283,15 @@ def evaluate_epoch_checkpoints(
     compare_crf: bool = False,
     crf_params: Optional[Dict[str, Any]] = None,
     generate_plots: bool = True,
+    train_to_epochs: int = 60,
+    checkpoint_interval: int = 10,
 ) -> List[Dict[str, Any]]:
-    """Evaluate all epoch checkpoints for models in the configuration."""
+    """Evaluate all epoch checkpoints for models in the configuration.
+    
+    Args:
+        train_to_epochs: If compare_crf is True, train models to this epoch if needed (default: 60)
+        checkpoint_interval: Save checkpoints every N epochs (default: 10)
+    """
     paths = ProjectPaths.from_root()
     paths.ensure()
 
@@ -259,6 +345,7 @@ def evaluate_epoch_checkpoints(
             temp_segmenter = build_segmenter(builder, **params)
             if hasattr(temp_segmenter, "_get_config"):
                 model_config = temp_segmenter._get_config()
+                LOGGER.debug("Model %s config: %s", name, model_config)
             else:
                 LOGGER.warning("Model %s does not have _get_config method, skipping", name)
                 continue
@@ -266,14 +353,60 @@ def evaluate_epoch_checkpoints(
             LOGGER.warning("Could not build model %s to get config: %s", name, e)
             continue
         
+        # If compare_crf is enabled, ensure model is trained to target_epochs
+        if compare_crf:
+            LOGGER.info("Ensuring %s is trained to epoch %d (checkpoint interval: %d)...", name, train_to_epochs, checkpoint_interval)
+            success = ensure_model_trained_to_epochs(
+                builder=builder,
+                model_config=model_config,
+                params=params,
+                target_epochs=train_to_epochs,
+                checkpoint_interval=checkpoint_interval,
+                train_dataset=dataloaders.get("train_dataset"),
+                val_dataset=dataloaders.get("val_dataset"),
+                device_override=device_override,
+            )
+            if not success:
+                LOGGER.warning("Failed to train %s to epoch %d, skipping evaluation", name, train_to_epochs)
+                continue
+        
         # Find all epoch checkpoints for this model
         epoch_checkpoints = list_epoch_checkpoints(builder, model_config)
         
         if not epoch_checkpoints:
-            LOGGER.info("No epoch checkpoints found for %s (builder: %s)", name, builder)
+            LOGGER.warning("No epoch checkpoints found for %s (builder: %s)", name, builder)
+            # Debug: List all available checkpoints for this builder
+            from segmentation_benchmark.utils.checkpoint import get_checkpoint_dir
+            checkpoint_dir = get_checkpoint_dir()
+            if checkpoint_dir.exists():
+                all_checkpoints = list(checkpoint_dir.glob(f"{builder}_*_epoch_*.pth"))
+                if all_checkpoints:
+                    LOGGER.info("Found %d epoch checkpoint files for builder %s, but config mismatch. Files: %s", 
+                               len(all_checkpoints), builder, [p.name for p in all_checkpoints[:5]])
+                    # Try to load one checkpoint to see its config
+                    if all_checkpoints:
+                        from segmentation_benchmark.utils.checkpoint import get_config_from_checkpoint
+                        sample_config = get_config_from_checkpoint(all_checkpoints[0])
+                        if sample_config:
+                            LOGGER.info("Sample checkpoint config: %s", sample_config)
+                            LOGGER.info("Current model config: %s", model_config)
+                else:
+                    LOGGER.info("No epoch checkpoint files found for builder %s in %s", builder, checkpoint_dir)
             continue
         
-        LOGGER.info("Found %d epoch checkpoints for %s", len(epoch_checkpoints), name)
+        # Filter to only checkpoints up to train_to_epochs if compare_crf is enabled
+        if compare_crf:
+            epoch_checkpoints = [(epoch, path) for epoch, path in epoch_checkpoints if epoch <= train_to_epochs]
+            # Also ensure we only include checkpoints at the interval
+            epoch_checkpoints = [(epoch, path) for epoch, path in epoch_checkpoints 
+                               if epoch % checkpoint_interval == 0 or epoch == train_to_epochs]
+        
+        if not epoch_checkpoints:
+            LOGGER.info("No epoch checkpoints found for %s (builder: %s) up to epoch %d", name, builder, train_to_epochs)
+            continue
+        
+        LOGGER.info("Found %d epoch checkpoints for %s: epochs %s", 
+                   len(epoch_checkpoints), name, [epoch for epoch, _ in epoch_checkpoints])
         
         # Evaluate each epoch checkpoint
         for epoch, checkpoint_path in epoch_checkpoints:
@@ -313,9 +446,15 @@ def evaluate_epoch_checkpoints(
             # Evaluate original model
             model_name = f"{name}_epoch_{epoch}"
             try:
+                # Use val_loader if available, otherwise test_loader
+                eval_loader = dataloaders.get("val_loader") or dataloaders.get("test_loader")
+                if eval_loader is None:
+                    LOGGER.warning("No validation or test loader available for %s", name)
+                    continue
+                
                 report = evaluator.evaluate(
                     segmenter=segmenter,
-                    test_loader=dataloaders["test_loader"],
+                    test_loader=eval_loader,
                     train_dataset=None,  # Skip training, we're using checkpoints
                     val_dataset=None,
                     model_name=model_name,
@@ -378,9 +517,15 @@ def evaluate_epoch_checkpoints(
                         
                         # Evaluate CRF version
                         crf_model_name = f"{name}_epoch_{epoch}_crf"
+                        # Use val_loader if available, otherwise test_loader
+                        eval_loader = dataloaders.get("val_loader") or dataloaders.get("test_loader")
+                        if eval_loader is None:
+                            LOGGER.warning("No validation or test loader available for CRF version of %s", name)
+                            continue
+                        
                         crf_report = evaluator.evaluate(
                             segmenter=crf_segmenter,
-                            test_loader=dataloaders["test_loader"],
+                            test_loader=eval_loader,
                             train_dataset=None,
                             val_dataset=None,
                             model_name=crf_model_name,

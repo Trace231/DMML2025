@@ -29,6 +29,37 @@ def _compute_config_hash(config: Dict[str, Any]) -> str:
     return hashlib.sha256(config_str.encode()).hexdigest()[:16]
 
 
+def _configs_match(config1: Dict[str, Any], config2: Dict[str, Any]) -> bool:
+    """Compare two configuration dictionaries with tolerance for float precision.
+    
+    This function handles:
+    - Float comparison with small tolerance (1e-6)
+    - Missing keys (if a key is in one but not the other, it's considered a mismatch)
+    - Type mismatches
+    """
+    if set(config1.keys()) != set(config2.keys()):
+        return False
+    
+    for key in config1.keys():
+        val1 = config1[key]
+        val2 = config2[key]
+        
+        # Handle float comparison with tolerance
+        if isinstance(val1, float) and isinstance(val2, float):
+            if abs(val1 - val2) > 1e-6:
+                return False
+        elif isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
+            # Compare numeric values
+            if abs(float(val1) - float(val2)) > 1e-6:
+                return False
+        else:
+            # Exact match for other types
+            if val1 != val2:
+                return False
+    
+    return True
+
+
 def get_checkpoint_dir() -> Path:
     """Get the directory for storing checkpoints."""
     paths = ProjectPaths.from_root()
@@ -280,20 +311,22 @@ def list_epoch_checkpoints(
     if not checkpoint_dir.exists():
         return []
     
-    # Default ignore keys: finetune_epochs should not affect epoch checkpoint matching
+    # Default ignore keys: these should not affect epoch checkpoint matching
+    # - finetune_epochs: training duration doesn't affect model compatibility
+    # - resume_epoch: resume point doesn't affect model compatibility
     if ignore_keys is None:
-        ignore_keys = ["finetune_epochs"]
+        ignore_keys = ["finetune_epochs", "resume_epoch"]
     
     # Create filtered config for matching (excluding ignored keys)
     filtered_config = {k: v for k, v in config.items() if k not in ignore_keys}
     filtered_config_hash = _compute_config_hash(filtered_config)
+    full_config_hash = _compute_config_hash(config)
     
-    # Try exact match first
-    pattern = f"{builder}_{filtered_config_hash}_epoch_*.pth"
     epoch_checkpoints = []
     
+    # Strategy 1: Try exact match with full config hash (in case checkpoint was saved with full config)
+    pattern = f"{builder}_{full_config_hash}_epoch_*.pth"
     for checkpoint_path in checkpoint_dir.glob(pattern):
-        # Extract epoch number from filename: {builder}_{hash}_epoch_{epoch}.pth
         try:
             epoch_str = checkpoint_path.stem.split("_epoch_")[-1]
             epoch = int(epoch_str)
@@ -301,21 +334,36 @@ def list_epoch_checkpoints(
         except (ValueError, IndexError):
             continue
     
-    # If no exact match found, try to match by loading checkpoint configs
+    # Strategy 2: Try exact match with filtered config hash (in case checkpoint was saved without ignored keys)
+    if not epoch_checkpoints:
+        pattern = f"{builder}_{filtered_config_hash}_epoch_*.pth"
+        for checkpoint_path in checkpoint_dir.glob(pattern):
+            try:
+                epoch_str = checkpoint_path.stem.split("_epoch_")[-1]
+                epoch = int(epoch_str)
+                epoch_checkpoints.append((epoch, checkpoint_path))
+            except (ValueError, IndexError):
+                continue
+    
+    # Strategy 3: If no exact match found, try to match by loading checkpoint configs
+    # This handles cases where the hash doesn't match but the config content matches
     if not epoch_checkpoints:
         # List all epoch checkpoints for this builder
         all_pattern = f"{builder}_*_epoch_*.pth"
-        for checkpoint_path in checkpoint_dir.glob(all_pattern):
+        all_checkpoint_files = list(checkpoint_dir.glob(all_pattern))
+        for checkpoint_path in all_checkpoint_files:
             try:
                 # Load checkpoint and check if config matches (ignoring specified keys)
                 checkpoint_config = get_config_from_checkpoint(checkpoint_path)
                 if checkpoint_config:
                     filtered_checkpoint_config = {k: v for k, v in checkpoint_config.items() if k not in ignore_keys}
-                    if filtered_checkpoint_config == filtered_config:
+                    # Use a more lenient comparison that handles float precision issues
+                    if _configs_match(filtered_checkpoint_config, filtered_config):
                         epoch_str = checkpoint_path.stem.split("_epoch_")[-1]
                         epoch = int(epoch_str)
                         epoch_checkpoints.append((epoch, checkpoint_path))
-            except (ValueError, IndexError, Exception):
+            except (ValueError, IndexError, Exception) as e:
+                # Silently continue on errors
                 continue
     
     return sorted(epoch_checkpoints, key=lambda x: x[0])
@@ -330,6 +378,7 @@ def load_epoch_checkpoint(
     optimizer: Optional[torch.optim.Optimizer] = None,
     scheduler: Optional[Any] = None,
     scaler: Optional[Any] = None,
+    ignore_keys: Optional[list[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load a checkpoint for a specific epoch.
     
@@ -342,32 +391,62 @@ def load_epoch_checkpoint(
         optimizer: Optional optimizer to load state into (for resume training)
         scheduler: Optional scheduler to load state into (for resume training)
         scaler: Optional gradient scaler to load state into (for resume training with AMP)
+        ignore_keys: Optional list of keys to ignore when matching (e.g., ['finetune_epochs'])
         
     Returns:
         The checkpoint dictionary if found, None otherwise
     """
+    # First try direct path match (fast path for exact config match)
     checkpoint_path = get_checkpoint_path(builder, config, create_dir=False, epoch=epoch)
     
-    if not checkpoint_path.exists():
-        return None
+    if checkpoint_path.exists():
+        # Direct match found, load it
+        if device is None:
+            device = torch.device("cpu")
+        
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        
+        if model is not None:
+            model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        
+        # Load training state for resume
+        if optimizer is not None and "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if scheduler is not None and "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if scaler is not None and "scaler_state_dict" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        
+        return checkpoint
     
-    if device is None:
-        device = torch.device("cpu")
+    # If direct match failed, use the same robust matching strategy as list_epoch_checkpoints
+    # This handles cases where config hash doesn't match due to ignored keys (e.g., finetune_epochs)
+    epoch_checkpoints = list_epoch_checkpoints(builder, config, ignore_keys=ignore_keys)
     
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    # Find the checkpoint with the matching epoch
+    for checkpoint_epoch, checkpoint_path in epoch_checkpoints:
+        if checkpoint_epoch == epoch:
+            # Found matching epoch, load it
+            if device is None:
+                device = torch.device("cpu")
+            
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            
+            if model is not None:
+                model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+            
+            # Load training state for resume
+            if optimizer is not None and "optimizer_state_dict" in checkpoint:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            if scheduler is not None and "scheduler_state_dict" in checkpoint:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            if scaler is not None and "scaler_state_dict" in checkpoint:
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
+            
+            return checkpoint
     
-    if model is not None:
-        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-    
-    # Load training state for resume
-    if optimizer is not None and "optimizer_state_dict" in checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    if scheduler is not None and "scheduler_state_dict" in checkpoint:
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-    if scaler is not None and "scaler_state_dict" in checkpoint:
-        scaler.load_state_dict(checkpoint["scaler_state_dict"])
-    
-    return checkpoint
+    # No matching checkpoint found
+    return None
 
 
 def get_config_from_checkpoint(checkpoint_path: Path) -> Optional[Dict[str, Any]]:
