@@ -120,7 +120,7 @@ class TorchvisionSegmenter(BaseSegmenter):
             "num_workers": self.num_workers,
         }
     
-    def prepare(self, train_dataset: Optional[Any] = None, val_dataset: Optional[Any] = None) -> None:
+    def prepare(self, train_dataset: Optional[Any] = None, val_dataset: Optional[Any] = None, checkpoint_builder_name: Optional[str] = None) -> None:
         # Skip training if checkpoint was already loaded
         if self._checkpoint_loaded:
             print(f"[INFO] {self.name}: Skipping training (using loaded checkpoint)")
@@ -129,6 +129,9 @@ class TorchvisionSegmenter(BaseSegmenter):
         
         if self.finetune_epochs <= 0 or train_dataset is None:
             return
+        
+        # Use provided checkpoint builder name, or fall back to model_name
+        builder_name = checkpoint_builder_name if checkpoint_builder_name is not None else self.model_name
         loader = DataLoader(
             train_dataset,
             batch_size=self.batch_size,
@@ -181,7 +184,7 @@ class TorchvisionSegmenter(BaseSegmenter):
         if self.resume_epoch is not None:
             # Manual resume: load specific epoch
             checkpoint = load_epoch_checkpoint(
-                self.model_name, config, self.resume_epoch, 
+                builder_name, config, self.resume_epoch, 
                 model=self.model, device=self.device,
                 optimizer=optimizer, scheduler=scheduler, scaler=scaler
             )
@@ -193,7 +196,7 @@ class TorchvisionSegmenter(BaseSegmenter):
         else:
             # Auto resume: find and load latest checkpoint
             result = load_latest_epoch_checkpoint(
-                self.model_name, config,
+                builder_name, config,
                 model=self.model, device=self.device,
                 optimizer=optimizer, scheduler=scheduler, scaler=scaler
             )
@@ -260,7 +263,7 @@ class TorchvisionSegmenter(BaseSegmenter):
             if current_epoch % checkpoint_interval == 0:
                 checkpoint_path = save_checkpoint(
                     self.model,
-                    self.model_name,
+                    builder_name,
                     config,
                     metadata={"loss": avg_loss, "epoch": current_epoch, "total_epochs": self.finetune_epochs},
                     epoch=current_epoch,
@@ -275,7 +278,7 @@ class TorchvisionSegmenter(BaseSegmenter):
         # Save final checkpoint after training
         checkpoint_path = save_checkpoint(
             self.model,
-            self.model_name,
+            builder_name,
             config,
             metadata={"final_loss": avg_loss, "epochs": self.finetune_epochs},
             optimizer=optimizer,

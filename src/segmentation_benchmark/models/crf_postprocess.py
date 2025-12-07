@@ -82,16 +82,30 @@ class AdaptiveCrfConfig:
 
 
 class CrfPostProcessor:
-    def __init__(self, num_classes: int = 2, params: CrfParams | None = None) -> None:
+    def __init__(
+        self, 
+        num_classes: int = 2, 
+        params: CrfParams | None = None,
+        use_boundary_aware: bool = False,
+        boundary_threshold: float = 0.3,
+    ) -> None:
         if dcrf is None or unary_from_softmax is None:
             raise ImportError("pydensecrf is required for CRF post processing")
         self.num_classes = num_classes
         self.params = params or CrfParams()
+        self.use_boundary_aware = use_boundary_aware
+        self.boundary_threshold = boundary_threshold
 
     def refine(self, image: Any, logits: Any) -> np.ndarray:
         image_np = CrfPostProcessor._ensure_image(image)
         probabilities = self._ensure_probabilities(logits)
         h, w = image_np.shape[:2]
+        
+        # Boundary-aware CRF: apply stronger CRF only near boundaries
+        if self.use_boundary_aware:
+            return self._refine_boundary_aware(image_np, probabilities, h, w)
+        
+        # Standard CRF
         dense = dcrf.DenseCRF2D(w, h, self.num_classes)
         unary = unary_from_softmax(probabilities)
         dense.setUnaryEnergy(unary)
@@ -104,6 +118,73 @@ class CrfPostProcessor:
         )
         q = dense.inference(self.params.iterations)
         refined = np.argmax(np.array(q).reshape(self.num_classes, h, w), axis=0)
+        return refined.astype(np.int64)
+    
+    def _refine_boundary_aware(self, image_np: np.ndarray, probabilities: np.ndarray, h: int, w: int) -> np.ndarray:
+        """Apply CRF with boundary-aware processing."""
+        # Detect boundaries from predictions
+        pred = np.argmax(probabilities, axis=0)
+        
+        # Compute gradient magnitude to detect boundaries
+        from scipy import ndimage
+        sobel_x = ndimage.sobel(pred.astype(float), axis=1)
+        sobel_y = ndimage.sobel(pred.astype(float), axis=0)
+        gradient_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+        boundary_mask = gradient_magnitude > (gradient_magnitude.max() * self.boundary_threshold)
+        
+        # Apply standard CRF
+        dense = dcrf.DenseCRF2D(w, h, self.num_classes)
+        unary = unary_from_softmax(probabilities)
+        dense.setUnaryEnergy(unary)
+        dense.addPairwiseGaussian(sxy=self.params.gaussian_sxy, compat=self.params.compat_gaussian)
+        dense.addPairwiseBilateral(
+            sxy=self.params.bilateral_sxy,
+            srgb=self.params.bilateral_srgb,
+            rgbim=image_np,
+            compat=self.params.compat_bilateral,
+        )
+        q = dense.inference(self.params.iterations)
+        refined = np.argmax(np.array(q).reshape(self.num_classes, h, w), axis=0)
+        
+        # Apply stronger CRF only on boundary regions
+        if boundary_mask.any():
+            # Create a mask for boundary regions (dilated)
+            from scipy import ndimage
+            boundary_dilated = ndimage.binary_dilation(boundary_mask, iterations=3)
+            
+            # Apply stronger CRF on boundary regions
+            boundary_params = CrfParams(
+                iterations=self.params.iterations + 2,  # More iterations
+                gaussian_sxy=self.params.gaussian_sxy,
+                bilateral_sxy=int(self.params.bilateral_sxy * 1.2),  # Larger spatial
+                bilateral_srgb=self.params.bilateral_srgb,
+                compat_gaussian=self.params.compat_gaussian,
+                compat_bilateral=int(self.params.compat_bilateral * 1.2),  # Stronger compatibility
+            )
+            
+            # Extract boundary region
+            boundary_coords = np.where(boundary_dilated)
+            if len(boundary_coords[0]) > 0:
+                # For simplicity, apply CRF to entire image with stronger params
+                # In a more sophisticated implementation, we could crop and process only boundary regions
+                dense_boundary = dcrf.DenseCRF2D(w, h, self.num_classes)
+                dense_boundary.setUnaryEnergy(unary)
+                dense_boundary.addPairwiseGaussian(
+                    sxy=boundary_params.gaussian_sxy, 
+                    compat=boundary_params.compat_gaussian
+                )
+                dense_boundary.addPairwiseBilateral(
+                    sxy=boundary_params.bilateral_sxy,
+                    srgb=boundary_params.bilateral_srgb,
+                    rgbim=image_np,
+                    compat=boundary_params.compat_bilateral,
+                )
+                q_boundary = dense_boundary.inference(boundary_params.iterations)
+                refined_boundary = np.argmax(np.array(q_boundary).reshape(self.num_classes, h, w), axis=0)
+                
+                # Blend: use boundary-refined result in boundary regions, standard result elsewhere
+                refined = np.where(boundary_dilated, refined_boundary, refined)
+        
         return refined.astype(np.int64)
 
     @staticmethod

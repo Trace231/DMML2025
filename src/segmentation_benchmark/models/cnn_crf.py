@@ -10,7 +10,12 @@ import numpy as np
 from ..evaluation.registry import register_segmenter
 from .base import BaseSegmenter
 from .cnn import TorchvisionSegmenter
-from .crf_postprocess import CrfParams, CrfPostProcessor
+from .crf_postprocess import (
+    AdaptiveCrfConfig,
+    AdaptiveCrfPostProcessor,
+    CrfParams,
+    CrfPostProcessor,
+)
 
 
 @dataclass
@@ -24,6 +29,8 @@ class CnnCrfConfig:
     num_workers: int = 0
     device: Optional[str] = None
     crf_params: Optional[Dict[str, Any]] = None
+    use_adaptive_crf: bool = False
+    adaptive_crf_config: Optional[Dict[str, Any]] = None
 
 
 @register_segmenter("cnn_crf")
@@ -45,12 +52,56 @@ class CnnCrfSegmenter(BaseSegmenter):
             "device": str(self.device),
         }
         self.base_segmenter = TorchvisionSegmenter(**base_kwargs)
-        crf_params = self.config.crf_params or {}
-        params = CrfParams(**crf_params) if isinstance(crf_params, dict) else crf_params
-        self.crf = CrfPostProcessor(num_classes=num_classes, params=params)
+        
+        # Initialize CRF post-processor
+        if self.config.use_adaptive_crf:
+            self.crf = AdaptiveCrfPostProcessor(
+                num_classes=num_classes,
+                config=self.config.adaptive_crf_config
+            )
+        else:
+            crf_params = self.config.crf_params or {}
+            params = CrfParams(**crf_params) if isinstance(crf_params, dict) else crf_params
+            self.crf = CrfPostProcessor(num_classes=num_classes, params=params)
+        
+        # Track if checkpoint was loaded to skip training
+        self._checkpoint_loaded = False
+
+    def _get_config(self) -> Dict[str, Any]:
+        """Get configuration dictionary for checkpoint matching."""
+        config = {
+            "builder": "cnn_crf",
+            "base_model": self.config.base_model,
+            "num_classes": self.num_classes,
+            "pretrained": self.config.pretrained,
+            "finetune_epochs": self.config.finetune_epochs,
+            "learning_rate": self.config.learning_rate,
+            "weight_decay": self.config.weight_decay,
+            "batch_size": self.config.batch_size,
+            "num_workers": self.config.num_workers,
+        }
+        # Include CRF params if they exist
+        if self.config.crf_params:
+            config["crf_params"] = self.config.crf_params
+        if self.config.use_adaptive_crf:
+            config["use_adaptive_crf"] = True
+            if self.config.adaptive_crf_config:
+                config["adaptive_crf_config"] = self.config.adaptive_crf_config
+        return config
+    
+    @property
+    def model(self):
+        """Access the underlying model for checkpoint loading."""
+        return self.base_segmenter.model
 
     def prepare(self, train_dataset: Optional[Any] = None, val_dataset: Optional[Any] = None) -> None:
-        self.base_segmenter.prepare(train_dataset=train_dataset, val_dataset=val_dataset)
+        # Skip training if checkpoint was already loaded
+        if self._checkpoint_loaded:
+            print(f"[INFO] {self.name}: Skipping training (using loaded checkpoint)")
+            self.base_segmenter.model.eval()
+            return
+        # Pass "cnn_crf" as checkpoint_builder_name so checkpoints are saved with cnn_crf prefix
+        self.base_segmenter.prepare(train_dataset=train_dataset, val_dataset=val_dataset, checkpoint_builder_name="cnn_crf")
 
     def predict_logits(self, batch: Dict[str, Any]) -> Optional[np.ndarray]:
         logits = self.base_segmenter.predict_logits(batch)

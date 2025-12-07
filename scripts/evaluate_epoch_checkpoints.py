@@ -324,6 +324,22 @@ def evaluate_epoch_checkpoints(
         if device_override is not None:
             params.setdefault("device", device_override)
         
+        # For cnn_crf models, ensure they use adaptive_crf_full configuration
+        if builder == "cnn_crf":
+            # Set adaptive_crf_full configuration if not already specified
+            config_dict = params.get("config", {})
+            if not isinstance(config_dict, dict):
+                config_dict = {}
+            if not config_dict.get("use_adaptive_crf", False):
+                LOGGER.info("Setting %s to use adaptive_crf_full configuration", name)
+                config_dict["use_adaptive_crf"] = True
+                config_dict["adaptive_crf_config"] = {
+                    "scale_by_image_size": True,
+                    "scale_by_entropy": True,
+                    "scale_by_contrast": True,
+                }
+                params["config"] = config_dict
+        
         # Skip models that don't support epoch checkpoints (e.g., crf_wrapper, classical_crf)
         if builder in ["crf_wrapper", "classical_crf", "ddp", "random_walker"]:
             LOGGER.info("Skipping %s (does not support epoch checkpoints)", name)
@@ -353,6 +369,27 @@ def evaluate_epoch_checkpoints(
             LOGGER.warning("Could not build model %s to get config: %s", name, e)
             continue
         
+        # For cnn_crf models, checkpoints are saved using the base model name
+        # We need to use the base model's builder and config to find checkpoints
+        checkpoint_builder = builder
+        checkpoint_config = model_config
+        if builder == "cnn_crf":
+            # Extract base model info from config
+            base_model = model_config.get("base_model", "fcn_resnet50")
+            checkpoint_builder = base_model
+            # Create config for base model checkpoint matching
+            checkpoint_config = {
+                "model_name": base_model,
+                "num_classes": model_config.get("num_classes", num_classes),
+                "pretrained": model_config.get("pretrained", True),
+                "finetune_epochs": model_config.get("finetune_epochs", 100),
+                "learning_rate": model_config.get("learning_rate", 1e-4),
+                "weight_decay": model_config.get("weight_decay", 1e-4),
+                "batch_size": model_config.get("batch_size", 2),
+                "num_workers": model_config.get("num_workers", 0),
+            }
+            LOGGER.info("cnn_crf model %s uses base model %s for checkpoint lookup", name, base_model)
+        
         # If compare_crf is enabled, ensure model is trained to target_epochs
         if compare_crf:
             LOGGER.info("Ensuring %s is trained to epoch %d (checkpoint interval: %d)...", name, train_to_epochs, checkpoint_interval)
@@ -371,7 +408,7 @@ def evaluate_epoch_checkpoints(
                 continue
         
         # Find all epoch checkpoints for this model
-        epoch_checkpoints = list_epoch_checkpoints(builder, model_config)
+        epoch_checkpoints = list_epoch_checkpoints(checkpoint_builder, checkpoint_config)
         
         if not epoch_checkpoints:
             LOGGER.warning("No epoch checkpoints found for %s (builder: %s)", name, builder)
@@ -426,8 +463,8 @@ def evaluate_epoch_checkpoints(
                 model_to_load = segmenter.base_segmenter.model
             
             checkpoint = load_epoch_checkpoint(
-                builder,
-                model_config,
+                checkpoint_builder,
+                checkpoint_config,
                 epoch,
                 model=model_to_load,
                 device=device,
@@ -479,16 +516,24 @@ def evaluate_epoch_checkpoints(
             # Evaluate with CRF post-processing if requested
             if compare_crf:
                 try:
-                    LOGGER.info("Evaluating %s at epoch %d with CRF post-processing...", name, epoch)
+                    LOGGER.info("Evaluating %s at epoch %d with Adaptive CRF Full post-processing...", name, epoch)
                     
-                    # Build CRF-wrapped segmenter
+                    # Build CRF-wrapped segmenter with adaptive_crf_full configuration
+                    # adaptive_crf_full: all adaptive features enabled (image size, entropy, contrast)
+                    adaptive_crf_config = {
+                        "scale_by_image_size": True,
+                        "scale_by_entropy": True,
+                        "scale_by_contrast": True,
+                    }
+                    
                     crf_wrapper_params = {
                         "base_builder": builder,
                         "base_params": params.copy(),
                         "num_classes": num_classes,
-                        "crf_params": crf_params or {},
                         "use_trained_base": False,  # We'll load checkpoint manually
                         "enable_crf": True,
+                        "use_adaptive_crf": True,  # Use adaptive CRF
+                        "adaptive_crf_config": adaptive_crf_config,  # Use adaptive_crf_full config
                     }
                     if device_override is not None:
                         crf_wrapper_params["base_params"]["device"] = device_override
@@ -501,8 +546,8 @@ def evaluate_epoch_checkpoints(
                         crf_model_to_load = crf_segmenter.base.model
                     
                     crf_checkpoint = load_epoch_checkpoint(
-                        builder,
-                        model_config,
+                        checkpoint_builder,
+                        checkpoint_config,
                         epoch,
                         model=crf_model_to_load,
                         device=device,
