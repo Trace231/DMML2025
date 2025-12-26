@@ -2,6 +2,21 @@
 
 This is a comprehensive image segmentation evaluation project for comparing various types of segmentation models on datasets and outputting unified evaluation metrics. We aim to validate the practical effectiveness of CRF post-processing techniques in image segmentation post-processing through this work. This project supports evaluation modules for two default datasets: the **"crackforest"** dataset and the **voc_2012** dataset, with support for automatic download, dataset splitting, model training/fine-tuning, inference, metric calculation, and result archiving.
 
+<table>
+<tr>
+<td align="center" style="width:50%">
+<img src="figs/epoch_070_2007_007250_crf_comparison.png" width="95%">
+</td>
+
+<td align="center" style="width:50%">
+<img src="figs/epoch_070_2008_000197_crf_comparison.png" width="95%">
+</td>
+</tr>
+</table>
+
+
+
+
 ## Key Features
 
 - Supported data-driven baselines: CRF feature models, CNN, Transformer, DDP (Diffusion Model), Hybrid CNN-Transformer, CNN-CRF, and any model + CRF post-processing.
@@ -323,6 +338,20 @@ This project aims to provide a systematic evaluation framework for image segment
 # 图像分割集成套件
 
 这是一个完整的图像分割评测项目，用于在数据集上比较多种类型的分割模型，并统一输出评估指标。我们希望通过该工作验证crf后处理技巧在图像分割后处理中的实际作用。本项目支持两个默认数据集的评测模块，分别是 **"crackforest"** 数据集和 **voc_2012** 数据集 ，支持自动下载、数据集拆分、模型训练/微调、推理、指标计算和结果归档。
+
+
+<table>
+<tr>
+<td align="center" style="width:50%">
+<img src="figs/epoch_070_2007_007250_crf_comparison.png" width="95%">
+</td>
+
+<td align="center" style="width:50%">
+<img src="figs/epoch_070_2008_000197_crf_comparison.png" width="95%">
+</td>
+</tr>
+</table>
+
 
 ## 功能亮点
 
